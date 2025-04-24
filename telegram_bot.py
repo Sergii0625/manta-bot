@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime
 import aiohttp
-from manta_bot.monitoring_scanner import Scanner
+from monitoring_scanner import Scanner
 
 # Настройка логирования
 logging.basicConfig(
