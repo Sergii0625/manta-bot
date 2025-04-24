@@ -27,12 +27,6 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-DEFAULT_LEVELS = [
-    Decimal("0.0100"), Decimal("0.0090"), Decimal("0.0080"), Decimal("0.0070"),
-    Decimal("0.0060"), Decimal("0.0050"), Decimal("0.0040"), Decimal("0.0030"),
-    Decimal("0.0020"), Decimal("0.0010"), Decimal("0.0005"), Decimal("0.0004"),
-    Decimal("0.0003"), Decimal("0.0002"), Decimal("0.0001")
-]
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -168,14 +162,15 @@ class BotState:
         try:
             levels = await load_levels(user_id)
             if levels is None:
-                levels = DEFAULT_LEVELS.copy()
+                # Устанавливаем пустой список вместо уровней по умолчанию
+                levels = []
                 await save_levels(user_id, levels)
             self.user_states[user_id]['current_levels'] = levels
             self.user_states[user_id]['current_levels'].sort(reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {levels}")
         except Exception as e:
-            logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default")
-            self.user_states[user_id]['current_levels'] = DEFAULT_LEVELS.copy()
+            logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to empty list")
+            self.user_states[user_id]['current_levels'] = []
             await save_levels(user_id, self.user_states[user_id]['current_levels'])
 
     async def save_levels(self, user_id, levels):
@@ -276,10 +271,10 @@ class BotState:
                 await self.load_or_set_default_levels(chat_id)
                 levels = self.user_states[chat_id]['current_levels']
 
-            if not levels:  # Проверяем, пустой ли список уровней
-                if force_base_message:  # Если команда "Проверить газ"
+            if not levels:
+                if force_base_message:
                     await self.update_message(chat_id, base_message + "\n\nУровни не заданы. Используйте 'Задать уровни'.", create_main_keyboard(chat_id))
-                else:  # При автоматическом мониторинге просто логируем
+                else:
                     logger.info(f"No levels set for chat_id={chat_id}, skipping notification check.")
                 self.user_states[chat_id]['prev_level'] = current_slow
                 return
@@ -722,7 +717,7 @@ async def process_value(message: types.Message):
                 await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
             elif text == "Назад":
                 del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
+                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id SF))
             elif text == "0.0001–0.01":
                 min_val, max_val = 0.0001, 0.01
                 state_data['range'] = (min_val, max_val)
