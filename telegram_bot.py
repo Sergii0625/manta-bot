@@ -8,6 +8,7 @@ from decimal import Decimal
 from datetime import datetime
 import aiohttp
 from monitoring_scanner import Scanner
+import asyncpg  # Добавлен импорт для работы с PostgreSQL
 
 # Настройка логирования
 logging.basicConfig(
@@ -17,20 +18,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Константы
-import os
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
 ALLOWED_USERS = [
     (501156257, "Сергей"),  # Ваш ID как админ
-
-
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-LEVELS_DIR = "../user_levels"
-STATS_DIR = "../user_stats"
 DEFAULT_LEVELS = [
     Decimal("0.0100"), Decimal("0.0090"), Decimal("0.0080"), Decimal("0.0070"),
     Decimal("0.0060"), Decimal("0.0050"), Decimal("0.0040"), Decimal("0.0030"),
@@ -38,10 +34,75 @@ DEFAULT_LEVELS = [
     Decimal("0.0003"), Decimal("0.0002"), Decimal("0.0001")
 ]
 
-if not os.path.exists(LEVELS_DIR):
-    os.makedirs(LEVELS_DIR)
-if not os.path.exists(STATS_DIR):
-    os.makedirs(STATS_DIR)
+# Функции для работы с PostgreSQL
+async def init_db():
+    # Подключение к базе данных
+    conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
+    # Создание таблиц, если их нет
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_levels (
+            user_id BIGINT PRIMARY KEY,
+            levels TEXT
+        );
+        CREATE TABLE IF NOT EXISTS user_stats (
+            user_id BIGINT PRIMARY KEY,
+            stats TEXT
+        );
+    """)
+    return conn
+
+async def save_levels(user_id, levels):
+    conn = await init_db()
+    # Сериализуем список уровней в строку JSON
+    levels_str = json.dumps([str(level) for level in levels])
+    await conn.execute(
+        """
+        INSERT INTO user_levels (user_id, levels)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id) DO UPDATE SET levels = $2
+        """,
+        user_id, levels_str
+    )
+    await conn.close()
+
+async def load_levels(user_id):
+    conn = await init_db()
+    # Загружаем уровни
+    result = await conn.fetchrow(
+        "SELECT levels FROM user_levels WHERE user_id = $1",
+        user_id
+    )
+    await conn.close()
+    if result:
+        # Десериализуем JSON обратно в список
+        levels = json.loads(result['levels'])
+        return [Decimal(level) for level in levels]
+    return None
+
+async def save_stats(user_id, stats):
+    conn = await init_db()
+    # Сериализуем статистику в строку JSON
+    stats_str = json.dumps(stats)
+    await conn.execute(
+        """
+        INSERT INTO user_stats (user_id, stats)
+        VALUES ($1, $2)
+        ON CONFLICT (user_id) DO UPDATE SET stats = $2
+        """,
+        user_id, stats_str
+    )
+    await conn.close()
+
+async def load_stats(user_id):
+    conn = await init_db()
+    result = await conn.fetchrow(
+        "SELECT stats FROM user_stats WHERE user_id = $1",
+        user_id
+    )
+    await conn.close()
+    if result:
+        return json.loads(result['stats'])
+    return None
 
 class BotState:
     def __init__(self, scanner):
@@ -112,54 +173,43 @@ class BotState:
             logger.error(f"Failed to set menu button: {e}")
 
     async def load_or_set_default_levels(self, user_id):
-        levels_file = os.path.join(LEVELS_DIR, f"levels_{user_id}.json")
         try:
-            if os.path.exists(levels_file):
-                with open(levels_file, "r") as f:
-                    data = json.load(f)
-                    loaded_levels = [Decimal(str(level)) for level in data.get("levels", [])]
-                    if loaded_levels:
-                        self.user_states[user_id]['current_levels'] = loaded_levels
-                        self.user_states[user_id]['current_levels'].sort(reverse=True)
-                        logger.info(f"Loaded levels for user_id={user_id}: {loaded_levels}")
-                    else:
-                        self.user_states[user_id]['current_levels'] = DEFAULT_LEVELS.copy()
-                        await self.save_levels(user_id, self.user_states[user_id]['current_levels'])
-            else:
-                self.user_states[user_id]['current_levels'] = DEFAULT_LEVELS.copy()
-                await self.save_levels(user_id, self.user_states[user_id]['current_levels'])
+            levels = await load_levels(user_id)
+            if levels is None:
+                # Устанавливаем уровни по умолчанию, если данных нет
+                levels = DEFAULT_LEVELS.copy()
+                await save_levels(user_id, levels)
+            self.user_states[user_id]['current_levels'] = levels
+            self.user_states[user_id]['current_levels'].sort(reverse=True)
+            logger.info(f"Loaded levels for user_id={user_id}: {levels}")
         except Exception as e:
             logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default")
             self.user_states[user_id]['current_levels'] = DEFAULT_LEVELS.copy()
-            await self.save_levels(user_id, self.user_states[user_id]['current_levels'])
+            await save_levels(user_id, self.user_states[user_id]['current_levels'])
 
     async def save_levels(self, user_id, levels):
         levels.sort(reverse=True)
-        levels_file = os.path.join(LEVELS_DIR, f"levels_{user_id}.json")
         try:
-            with open(levels_file, "w") as f:
-                json.dump({"levels": [float(level) for level in levels]}, f)
+            await save_levels(user_id, levels)
             self.user_states[user_id]['current_levels'] = levels
             logger.debug(f"Saved levels for user_id={user_id}: {levels}")
         except Exception as e:
             logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
 
     async def load_user_stats(self, user_id):
-        stats_file = os.path.join(STATS_DIR, f"stats_{user_id}.json")
         try:
-            if os.path.exists(stats_file):
-                with open(stats_file, "r") as f:
-                    self.user_stats[user_id] = json.load(f)
+            stats = await load_stats(user_id)
+            if stats is None:
+                stats = {}
+            self.user_stats[user_id] = stats
             self.init_user_stats(user_id)  # Обновляем статистику с новыми ключами
         except Exception as e:
             logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
             self.init_user_stats(user_id)
 
     async def save_user_stats(self, user_id):
-        stats_file = os.path.join(STATS_DIR, f"stats_{user_id}.json")
         try:
-            with open(stats_file, "w") as f:
-                json.dump(self.user_stats[user_id], f)
+            await save_stats(user_id, self.user_stats[user_id])
             logger.debug(f"Saved stats for user_id={user_id}")
         except Exception as e:
             logger.error(f"Error saving stats for user_id={user_id}: {str(e)}")
