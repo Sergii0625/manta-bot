@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+user_levels/
+user_stats/
+.env
+.idea/
