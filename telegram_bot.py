@@ -8,7 +8,7 @@ from decimal import Decimal
 from datetime import datetime
 import aiohttp
 from monitoring_scanner import Scanner
-import asyncpg  # Добавлен импорт для работы с PostgreSQL
+import asyncpg
 
 # Настройка логирования
 logging.basicConfig(
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
 ALLOWED_USERS = [
-    (501156257, "Сергей"),  # Ваш ID как админ
+    (501156257, "Сергей"),
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
@@ -36,9 +36,7 @@ DEFAULT_LEVELS = [
 
 # Функции для работы с PostgreSQL
 async def init_db():
-    # Подключение к базе данных
     conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-    # Создание таблиц, если их нет
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS user_levels (
             user_id BIGINT PRIMARY KEY,
@@ -53,7 +51,6 @@ async def init_db():
 
 async def save_levels(user_id, levels):
     conn = await init_db()
-    # Сериализуем список уровней в строку JSON
     levels_str = json.dumps([str(level) for level in levels])
     await conn.execute(
         """
@@ -67,21 +64,18 @@ async def save_levels(user_id, levels):
 
 async def load_levels(user_id):
     conn = await init_db()
-    # Загружаем уровни
     result = await conn.fetchrow(
         "SELECT levels FROM user_levels WHERE user_id = $1",
         user_id
     )
     await conn.close()
     if result:
-        # Десериализуем JSON обратно в список
         levels = json.loads(result['levels'])
         return [Decimal(level) for level in levels]
     return None
 
 async def save_stats(user_id, stats):
     conn = await init_db()
-    # Сериализуем статистику в строку JSON
     stats_str = json.dumps(stats)
     await conn.execute(
         """
@@ -114,10 +108,10 @@ class BotState:
         self.message_ids = {}
         self.l2_data_cache = None
         self.l2_data_time = None
-        self.l2_data_cooldown = 300  # 5 минут
+        self.l2_data_cooldown = 300
         self.fear_greed_cache = None
         self.fear_greed_time = None
-        self.fear_greed_cooldown = 300  # 5 минут для кэша Fear & Greed
+        self.fear_greed_cooldown = 300
         self.user_stats = {}
         logger.info("BotState initialized")
 
@@ -137,12 +131,10 @@ class BotState:
         if user_id not in self.user_stats:
             self.user_stats[user_id] = {}
         today = datetime.now().date().isoformat()
-        # Полный список действий для статистики
         default_stats = {
             "Проверить газ": 0, "Manta Price": 0, "Сравнение L2": 0,
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0
         }
-        # Если статистика за сегодня уже существует, обновляем её недостающими ключами
         if today not in self.user_stats[user_id]:
             self.user_stats[user_id][today] = default_stats.copy()
         else:
@@ -176,7 +168,6 @@ class BotState:
         try:
             levels = await load_levels(user_id)
             if levels is None:
-                # Устанавливаем уровни по умолчанию, если данных нет
                 levels = DEFAULT_LEVELS.copy()
                 await save_levels(user_id, levels)
             self.user_states[user_id]['current_levels'] = levels
@@ -202,7 +193,7 @@ class BotState:
             if stats is None:
                 stats = {}
             self.user_stats[user_id] = stats
-            self.init_user_stats(user_id)  # Обновляем статистику с новыми ключами
+            self.init_user_stats(user_id)
         except Exception as e:
             logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
             self.init_user_stats(user_id)
@@ -284,6 +275,14 @@ class BotState:
             if not levels:
                 await self.load_or_set_default_levels(chat_id)
                 levels = self.user_states[chat_id]['current_levels']
+
+            if not levels:  # Проверяем, пустой ли список уровней
+                if force_base_message:  # Если команда "Проверить газ"
+                    await self.update_message(chat_id, base_message + "\n\nУровни не заданы. Используйте 'Задать уровни'.", create_main_keyboard(chat_id))
+                else:  # При автоматическом мониторинге просто логируем
+                    logger.info(f"No levels set for chat_id={chat_id}, skipping notification check.")
+                self.user_states[chat_id]['prev_level'] = current_slow
+                return
 
             if prev_level is None or force_base_message:
                 await self.update_message(chat_id, base_message, create_main_keyboard(chat_id))
@@ -384,7 +383,7 @@ class BotState:
 
         url = "https://pro-api.coinmarketcap.com/v3/fear-and-greed/historical"
         headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
-        params = {"limit": 30}  # Получаем данные за последний месяц
+        params = {"limit": 30}
 
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as response:
@@ -397,27 +396,22 @@ class BotState:
                     return None
 
                 fg_data = data["data"]
-                # Текущий индекс (последний день)
                 current = fg_data[0]
                 current_value = int(current["value"])
                 current_category = current["value_classification"]
 
-                # Вчера
                 yesterday = fg_data[1]
                 yesterday_value = int(yesterday["value"])
                 yesterday_category = yesterday["value_classification"]
 
-                # Неделя назад
                 week_ago = fg_data[7] if len(fg_data) > 7 else fg_data[-1]
                 week_ago_value = int(week_ago["value"])
                 week_ago_category = week_ago["value_classification"]
 
-                # Месяц назад
                 month_ago = fg_data[-1]
                 month_ago_value = int(month_ago["value"])
                 month_ago_category = month_ago["value_classification"]
 
-                # Максимум и минимум года (примерно за 365 дней, если доступно)
                 year_data = fg_data[:365] if len(fg_data) > 365 else fg_data
                 year_values = [(int(d["value"]), d["timestamp"], d["value_classification"]) for d in year_data]
                 max_year = max(year_values, key=lambda x: x[0])
@@ -425,13 +419,10 @@ class BotState:
                 max_year_value, max_year_date, max_year_category = max_year
                 min_year_value, min_year_date, min_year_category = min_year
 
-                # Обработка временной метки
                 def parse_timestamp(ts):
                     try:
-                        # Если это строка ISO 8601
                         return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d.%m.%Y")
                     except ValueError:
-                        # Если это Unix-время (в секундах)
                         return datetime.fromtimestamp(int(ts)).strftime("%d.%m.%Y")
 
                 max_year_date = parse_timestamp(max_year_date)
@@ -575,7 +566,6 @@ class BotState:
             min_year_value = fg_data["year_min"]["value"]
             min_year_date = fg_data["year_min"]["date"]
 
-            # Построение прогресс-бара (20 символов)
             bar_length = 20
             filled = int(current_value / 100 * bar_length)
             progress_bar = f"🔴 {'█' * filled}{'▁' * (bar_length - filled)} 🟢"
@@ -680,7 +670,6 @@ async def handle_main_button(message: types.Message):
     text = message.text
     logger.debug(f"Button pressed: {text} by chat_id={chat_id}")
 
-    # Обновление статистики
     today = datetime.now().date().isoformat()
     state.user_stats[chat_id][today][text] += 1
     await state.save_user_stats(chat_id)
