@@ -717,7 +717,7 @@ async def process_value(message: types.Message):
                 await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
             elif text == "Назад":
                 del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id SF))
+                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
             elif text == "0.0001–0.01":
                 min_val, max_val = 0.0001, 0.01
                 state_data['range'] = (min_val, max_val)
