@@ -8,7 +8,6 @@ from decimal import Decimal
 from datetime import datetime
 import aiohttp
 from monitoring_scanner import Scanner
-import asyncpg
 
 # Настройка логирования
 logging.basicConfig(
@@ -18,8 +17,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Константы
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CMC_API_KEY = os.getenv("CMC_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7503928360:AAEZgFUWO3w0UrbHafm2z4pTVSL_Z1cildc")
+CMC_API_KEY = os.getenv("CMC_API_KEY", "2d64c836-9559-42b7-b76d-b5fcbb41f6df")
 ALLOWED_USERS = [
     (501156257, "Сергей"),
 ]
@@ -27,93 +26,13 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
+LEVELS_DIR = "user_levels"
+STATS_DIR = "user_stats"
 
-# Функции для работы с PostgreSQL
-async def init_db():
-    try:
-        conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_levels (
-                user_id BIGINT PRIMARY KEY,
-                levels TEXT
-            );
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id BIGINT PRIMARY KEY,
-                stats TEXT
-            );
-        """)
-        logger.info("Database initialized successfully")
-        return conn
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        raise
-
-async def save_levels(user_id, levels):
-    try:
-        conn = await init_db()
-        levels_str = json.dumps([str(level) for level in levels])
-        await conn.execute(
-            """
-            INSERT INTO user_levels (user_id, levels)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET levels = $2
-            """,
-            user_id, levels_str
-        )
-        await conn.close()
-        logger.debug(f"Levels saved for user_id={user_id}")
-    except Exception as e:
-        logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
-        raise
-
-async def load_levels(user_id):
-    try:
-        conn = await init_db()
-        result = await conn.fetchrow(
-            "SELECT levels FROM user_levels WHERE user_id = $1",
-            user_id
-        )
-        await conn.close()
-        if result:
-            levels = json.loads(result['levels'])
-            return [Decimal(level) for level in levels]
-        return None
-    except Exception as e:
-        logger.error(f"Error loading levels for user_id={user_id}: {str(e)}")
-        raise
-
-async def save_stats(user_id, stats):
-    try:
-        conn = await init_db()
-        stats_str = json.dumps(stats)
-        await conn.execute(
-            """
-            INSERT INTO user_stats (user_id, stats)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET stats = $2
-            """,
-            user_id, stats_str
-        )
-        await conn.close()
-        logger.debug(f"Stats saved for user_id={user_id}")
-    except Exception as e:
-        logger.error(f"Error saving stats for user_id={user_id}: {str(e)}")
-        raise
-
-async def load_stats(user_id):
-    try:
-        conn = await init_db()
-        result = await conn.fetchrow(
-            "SELECT stats FROM user_stats WHERE user_id = $1",
-            user_id
-        )
-        await conn.close()
-        if result:
-            return json.loads(result['stats'])
-        return None
-    except Exception as e:
-        logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
-        raise
+if not os.path.exists(LEVELS_DIR):
+    os.makedirs(LEVELS_DIR)
+if not os.path.exists(STATS_DIR):
+    os.makedirs(STATS_DIR)
 
 class BotState:
     def __init__(self, scanner):
@@ -182,42 +101,53 @@ class BotState:
             logger.error(f"Failed to set menu button: {e}")
 
     async def load_or_set_default_levels(self, user_id):
+        levels_file = os.path.join(LEVELS_DIR, f"levels_{user_id}.json")
         try:
-            levels = await load_levels(user_id)
-            if levels is None:
-                levels = []
-                await save_levels(user_id, levels)
-            self.user_states[user_id]['current_levels'] = levels
-            self.user_states[user_id]['current_levels'].sort(reverse=True)
-            logger.info(f"Loaded levels for user_id={user_id}: {levels}")
+            if os.path.exists(levels_file):
+                with open(levels_file, "r") as f:
+                    data = json.load(f)
+                    loaded_levels = [Decimal(str(level)) for level in data.get("levels", [])]
+                    if loaded_levels:
+                        self.user_states[user_id]['current_levels'] = loaded_levels
+                        self.user_states[user_id]['current_levels'].sort(reverse=True)
+                        logger.info(f"Loaded levels for user_id={user_id}: {loaded_levels}")
+                    else:
+                        self.user_states[user_id]['current_levels'] = []
+                        logger.info(f"No levels found for user_id={user_id}, set to empty list")
+            else:
+                self.user_states[user_id]['current_levels'] = []
+                logger.info(f"No levels file for user_id={user_id}, initialized as empty list")
         except Exception as e:
             logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to empty list")
             self.user_states[user_id]['current_levels'] = []
-            await save_levels(user_id, self.user_states[user_id]['current_levels'])
 
     async def save_levels(self, user_id, levels):
         levels.sort(reverse=True)
+        levels_file = os.path.join(LEVELS_DIR, f"levels_{user_id}.json")
         try:
-            await save_levels(user_id, levels)
+            with open(levels_file, "w") as f:
+                json.dump({"levels": [float(level) for level in levels]}, f)
             self.user_states[user_id]['current_levels'] = levels
             logger.debug(f"Saved levels for user_id={user_id}: {levels}")
         except Exception as e:
             logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
 
     async def load_user_stats(self, user_id):
+        stats_file = os.path.join(STATS_DIR, f"stats_{user_id}.json")
         try:
-            stats = await load_stats(user_id)
-            if stats is None:
-                stats = {}
-            self.user_stats[user_id] = stats
+            if os.path.exists(stats_file):
+                with open(stats_file, "r") as f:
+                    self.user_stats[user_id] = json.load(f)
             self.init_user_stats(user_id)
         except Exception as e:
             logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
             self.init_user_stats(user_id)
 
     async def save_user_stats(self, user_id):
+        stats_file = os.path.join(STATS_DIR, f"stats_{user_id}.json")
         try:
-            await save_stats(user_id, self.user_stats[user_id])
+            with open(stats_file, "w") as f:
+                json.dump(self.user_stats[user_id], f)
             logger.debug(f"Saved stats for user_id={user_id}")
         except Exception as e:
             logger.error(f"Error saving stats for user_id={user_id}: {str(e)}")
@@ -292,14 +222,9 @@ class BotState:
             if not levels:
                 await self.load_or_set_default_levels(chat_id)
                 levels = self.user_states[chat_id]['current_levels']
-
-            if not levels:
-                if force_base_message:
-                    await self.update_message(chat_id, base_message + "\n\nУровни не заданы. Используйте 'Задать уровни'.", create_main_keyboard(chat_id))
-                else:
-                    logger.info(f"No levels set for chat_id={chat_id}, skipping notification check.")
-                self.user_states[chat_id]['prev_level'] = current_slow
-                return
+                if not levels and not force_base_message:
+                    await self.update_message(chat_id, "⛽ Уровни не установлены. Задайте уровни через кнопку 'Задать уровни'.", create_main_keyboard(chat_id))
+                    return
 
             if prev_level is None or force_base_message:
                 await self.update_message(chat_id, base_message, create_main_keyboard(chat_id))
@@ -314,7 +239,7 @@ class BotState:
                         logger.info(f"Detected downward crossing for chat_id={chat_id}: {level:.5f}")
                         asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', level))
 
-            self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
+            self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow)) if levels else None
 
         except Exception as e:
             logger.error(f"Error for chat_id={chat_id}: {str(e)}")
@@ -664,6 +589,52 @@ def create_delete_levels_keyboard(levels):
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+async def monitor_gas_callback(gas_value, state):
+    for user_id, _ in ALLOWED_USERS:
+        state.init_user_state(user_id)
+        state.init_user_stats(user_id)
+        try:
+            await asyncio.sleep(1)
+            await state.get_manta_gas(user_id)
+        except Exception as e:
+            logger.error(f"Error in monitor_gas_callback for user {user_id}: {str(e)}")
+
+async def run_monitor_gas(scanner, state):
+    while True:
+        try:
+            logger.info("Starting monitor_gas task")
+            await scanner.monitor_gas(INTERVAL, lambda gas_value: monitor_gas_callback(gas_value, state))
+        except Exception as e:
+            logger.error(f"Error in monitor_gas task: {str(e)}")
+            await asyncio.sleep(INTERVAL)
+
+async def run_polling(state):
+    max_retries = 5
+    retry_count = 0
+    base_delay = 5
+
+    while retry_count < max_retries:
+        try:
+            logger.info("Starting polling task")
+            await state.dp.start_polling(state.bot, skip_updates=True)
+            break
+        except Exception as e:
+            retry_count += 1
+            logger.error(f"Error in polling task: {str(e)}")
+            if retry_count >= max_retries:
+                logger.error("Max retries reached, stopping polling")
+                break
+            delay = base_delay * (2 ** (retry_count - 1))
+            logger.info(f"Retrying polling in {delay} seconds (attempt {retry_count + 1}/{max_retries})")
+            await asyncio.sleep(delay)
+
+    if retry_count >= max_retries:
+        logger.error("Polling failed after maximum retries")
+        try:
+            await state.bot.send_message(ADMIN_ID, "⚠️ Бот не смог запустить polling после нескольких попыток. Проверьте логи.")
+        except Exception as e:
+            logger.error(f"Failed to notify admin: {str(e)}")
+
 def register_handlers(state):
     @state.dp.message(Command("start"))
     async def start_command(message: types.Message):
@@ -710,7 +681,7 @@ def register_handlers(state):
                 formatted_message = f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>"
                 await state.update_message(chat_id, formatted_message, create_main_keyboard(chat_id))
             else:
-                await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
+                await state.update_message(chat_id, "⛽ Уровни не установлены. Задайте уровни через кнопку 'Задать уровни'.", create_main_keyboard(chat_id))
         elif text == "Админ" and chat_id == ADMIN_ID:
             await state.get_admin_stats(chat_id)
 
@@ -746,7 +717,7 @@ def register_handlers(state):
                     await state.update_message(chat_id, "Введите уровень от 0,0001 до 0,01:", create_level_input_keyboard())
                 elif text == "Удалить уровни":
                     if not state.user_states[chat_id]['current_levels']:
-                        await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
+                        await state.update_message(chat_id, "⛽ Уровни не установлены.", create_main_keyboard(chat_id))
                         del state.pending_commands[chat_id]
                     else:
                         state_data['step'] = 'delete_level_selection'
@@ -850,38 +821,9 @@ def register_handlers(state):
         except Exception as e:
             logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
-async def monitor_gas_callback(gas_value, state):
-    for user_id, _ in ALLOWED_USERS:
-        state.init_user_state(user_id)
-        state.init_user_stats(user_id)
-        try:
-            await asyncio.sleep(1)
-            await state.get_manta_gas(user_id)
-        except Exception as e:
-            logger.error(f"Error in monitor_gas_callback for user {user_id}: {str(e)}")
-            # Продолжаем выполнение для других пользователей, не прерывая цикл
-
-async def run_monitor_gas(scanner, state):
-    while True:
-        try:
-            logger.info("Starting monitor_gas task")
-            await scanner.monitor_gas(INTERVAL, lambda gas_value: monitor_gas_callback(gas_value, state))
-        except Exception as e:
-            logger.error(f"Error in monitor_gas task: {str(e)}")
-            await asyncio.sleep(INTERVAL)  # Ждём перед следующей попыткой
-
-async def run_polling(state):
-    while True:
-        try:
-            logger.info("Starting polling task")
-            await state.dp.start_polling(state.bot)
-        except Exception as e:
-            logger.error(f"Error in polling task: {str(e)}")
-            await asyncio.sleep(5)  # Ждём 5 секунд перед перезапуском
-
 async def main():
     logger.info("Starting bot initialization")
-    scanner = Scanner()  # Создаем scanner внутри main, где цикл событий уже активен
+    scanner = Scanner()
     state = BotState(scanner)
     await state.set_menu_button()
     for user_id, _ in ALLOWED_USERS:
@@ -890,18 +832,15 @@ async def main():
         await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
 
-    # Регистрируем обработчики сообщений после создания state
     register_handlers(state)
 
     try:
-        # Запускаем задачи отдельно, чтобы они не блокировали друг друга
         await asyncio.gather(
             run_polling(state),
             run_monitor_gas(scanner, state),
             return_exceptions=True
         )
     finally:
-        # Закрываем сессию scanner
         await scanner.close()
         logger.info("Bot shutdown completed")
 
