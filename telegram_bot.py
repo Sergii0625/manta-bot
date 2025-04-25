@@ -21,11 +21,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "7503928360:AAEZgFUWO3w0UrbHafm2z4p
 CMC_API_KEY = os.getenv("CMC_API_KEY", "2d64c836-9559-42b7-b76d-b5fcbb41f6df")
 ALLOWED_USERS = [
     (501156257, "Сергей"),
-    (5070159060, "Васек"),
-    (1182677771, "Толик"),
-    (6322048522, "Кумец"),
-    (1725998320, "Света"),
-    (7009557842, "Мой лайф")
+
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
