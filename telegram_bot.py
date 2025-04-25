@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime
 import aiohttp
+from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 
@@ -91,6 +92,21 @@ async def load_stats(user_id):
     if result:
         return json.loads(result['stats'])
     return None
+
+# Функция для проверки состояния (health check)
+async def health_check(request):
+    return web.Response(text="OK")
+
+# Функция для запуска HTTP-сервера
+async def start_http_server():
+    app = web.Application()
+    app.add_routes([web.get('/', health_check)])
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv('PORT', 8080))  # Render задаёт PORT, по умолчанию 8080
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"HTTP-сервер запущен на порту {port}")
 
 class BotState:
     def __init__(self, scanner):
@@ -688,9 +704,9 @@ async def handle_main_button(message: types.Message):
         if current_levels:
             levels_text = "\n".join([f"◆ {level:.4f} Gwei" for level in current_levels])
             formatted_message = f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>"
-            await state.update_message(chat_id, formatted_message, create_main_keyboard(chat_id))
+            await self.update_message(chat_id, formatted_message, create_main_keyboard(chat_id))
         else:
-            await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
+            await self.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
     elif text == "Админ" and chat_id == ADMIN_ID:
         await state.get_admin_stats(chat_id)
 
@@ -850,6 +866,7 @@ async def main():
         await state.load_user_stats(user_id)
     try:
         await asyncio.gather(
+            start_http_server(),
             state.dp.start_polling(state.bot),
             scanner.monitor_gas(INTERVAL, monitor_gas_callback),
             return_exceptions=True
