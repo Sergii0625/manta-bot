@@ -28,15 +28,21 @@ class Scanner:
         logger.info("Scanner initialized with AsyncWeb3")
 
     async def get_current_gas(self):
-        """Получение текущего значения газа через eth_gasPrice"""
+        """Получение текущего значения газа через fee_history"""
         try:
             if not await self.web3.is_connected():
                 logger.error("Не удалось подключиться к Manta Pacific")
                 return None
-            gas_price = await self.web3.eth.gas_price
-            gas_price_gwei = Decimal(gas_price) / Decimal('1000000000')  # Преобразуем wei в Gwei
-            logger.info(f"Current gas price: {gas_price_gwei:.6f} Gwei")
-            return gas_price_gwei
+            block_count = 1
+            newest_block = "latest"
+            reward_percentiles = [25, 50, 75]
+            fee_history = await self.web3.eth.fee_history(block_count, newest_block, reward_percentiles)
+            base_fee_per_gas = fee_history["baseFeePerGas"][-1]
+            base_fee_gwei = Decimal(base_fee_per_gas) / Decimal('1000000000')  # Преобразуем wei в Gwei
+            priority_fee_gwei = [Decimal(fee) / Decimal('1000000000') for fee in fee_history["reward"][0]]  # Преобразуем приоритетные комиссии в Gwei
+            max_fee_slow = base_fee_gwei + priority_fee_gwei[0]  # Используем 25-й перцентиль для "медленной" транзакции
+            logger.info(f"Current gas price: {max_fee_slow:.6f} Gwei (base: {base_fee_gwei:.6f}, priority: {priority_fee_gwei[0]:.6f})")
+            return max_fee_slow
         except Exception as e:
             logger.error(f"Ошибка при получении газа: {str(e)}")
             return None
