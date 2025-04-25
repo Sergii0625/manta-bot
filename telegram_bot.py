@@ -664,9 +664,6 @@ def create_delete_levels_keyboard(levels):
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-scanner = Scanner()
-state = BotState(scanner)
-
 @state.dp.message(Command("start"))
 async def start_command(message: types.Message):
     if not await state.check_access(message):
@@ -852,7 +849,7 @@ async def process_value(message: types.Message):
     except Exception as e:
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
-async def monitor_gas_callback(gas_value):
+async def monitor_gas_callback(gas_value, state):
     for user_id, _ in ALLOWED_USERS:
         state.init_user_state(user_id)
         state.init_user_stats(user_id)
@@ -863,16 +860,16 @@ async def monitor_gas_callback(gas_value):
             logger.error(f"Error in monitor_gas_callback for user {user_id}: {str(e)}")
             # Продолжаем выполнение для других пользователей, не прерывая цикл
 
-async def run_monitor_gas():
+async def run_monitor_gas(scanner, state):
     while True:
         try:
             logger.info("Starting monitor_gas task")
-            await scanner.monitor_gas(INTERVAL, monitor_gas_callback)
+            await scanner.monitor_gas(INTERVAL, lambda gas_value: monitor_gas_callback(gas_value, state))
         except Exception as e:
             logger.error(f"Error in monitor_gas task: {str(e)}")
             await asyncio.sleep(INTERVAL)  # Ждём перед следующей попыткой
 
-async def run_polling():
+async def run_polling(state):
     while True:
         try:
             logger.info("Starting polling task")
@@ -883,6 +880,8 @@ async def run_polling():
 
 async def main():
     logger.info("Starting bot initialization")
+    scanner = Scanner()  # Создаем scanner внутри main, где цикл событий уже активен
+    state = BotState(scanner)
     await state.set_menu_button()
     for user_id, _ in ALLOWED_USERS:
         state.init_user_state(user_id)
@@ -893,8 +892,8 @@ async def main():
     try:
         # Запускаем задачи отдельно, чтобы они не блокировали друг друга
         await asyncio.gather(
-            run_polling(),
-            run_monitor_gas(),
+            run_polling(state),
+            run_monitor_gas(scanner, state),
             return_exceptions=True
         )
     finally:
