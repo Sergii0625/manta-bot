@@ -219,17 +219,22 @@ class BotState:
             levels = self.user_states[chat_id]['current_levels']
             confirmation_state = self.user_states[chat_id]['confirmation_state']
 
-            if not levels:
-                await self.load_or_set_default_levels(chat_id)
-                levels = self.user_states[chat_id]['current_levels']
-                if not levels and not force_base_message:
-                    await self.update_message(chat_id, "⛽ Уровни не установлены. Задайте уровни через кнопку 'Задать уровни'.", create_main_keyboard(chat_id))
-                    return
+            await self.load_or_set_default_levels(chat_id)
+            levels = self.user_states[chat_id]['current_levels']
 
-            if prev_level is None or force_base_message:
-                await self.update_message(chat_id, base_message, create_main_keyboard(chat_id))
+            # Показываем сообщение только если force_base_message=True (нажата кнопка "Проверить газ")
+            if force_base_message:
+                if not levels:
+                    # Если уровни не установлены, добавляем строку с предложением задать уровни
+                    message = f"{base_message}\nЗадайте уровни через кнопку 'Задать уровни'"
+                else:
+                    # Если уровни есть, показываем только базовое сообщение
+                    message = base_message
+                await self.update_message(chat_id, message, create_main_keyboard(chat_id))
                 self.user_states[chat_id]['prev_level'] = current_slow
-            elif confirmation_state['count'] == 0:
+
+            # Проверка уровней для уведомлений (работает в фоновом режиме, без отправки сообщений)
+            if prev_level is not None and confirmation_state['count'] == 0:
                 sorted_levels = sorted(levels)
                 for level in sorted_levels:
                     if prev_level < level <= current_slow:
@@ -594,8 +599,29 @@ async def monitor_gas_callback(gas_value, state):
         state.init_user_state(user_id)
         state.init_user_stats(user_id)
         try:
-            await asyncio.sleep(1)
-            await state.get_manta_gas(user_id)
+            # Обновляем состояние, но не отправляем сообщение
+            state.user_states[user_id]['last_measured_gas'] = gas_value
+            prev_level = state.user_states[user_id]['prev_level']
+            levels = state.user_states[user_id]['current_levels']
+            confirmation_state = state.user_states[user_id]['confirmation_state']
+
+            if prev_level is None:
+                state.user_states[user_id]['prev_level'] = gas_value
+                continue
+
+            if confirmation_state['count'] == 0:
+                sorted_levels = sorted(levels)
+                for level in sorted_levels:
+                    if prev_level < level <= gas_value:
+                        logger.info(f"Detected upward crossing for user_id={user_id}: {level:.5f}")
+                        asyncio.create_task(state.confirm_level_crossing(user_id, gas_value, 'up', level))
+                    elif prev_level > level >= gas_value:
+                        logger.info(f"Detected downward crossing for user_id={user_id}: {level:.5f}")
+                        asyncio.create_task(state.confirm_level_crossing(user_id, gas_value, 'down', level))
+
+            state.user_states[user_id]['active_level'] = min(levels, key=lambda x: abs(x - gas_value)) if levels else None
+            state.user_states[user_id]['prev_level'] = gas_value
+
         except Exception as e:
             logger.error(f"Error in monitor_gas_callback for user {user_id}: {str(e)}")
 
@@ -681,7 +707,7 @@ def register_handlers(state):
                 formatted_message = f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>"
                 await state.update_message(chat_id, formatted_message, create_main_keyboard(chat_id))
             else:
-                await state.update_message(chat_id, "⛽ Уровни не установлены. Задайте уровни через кнопку 'Задать уровни'.", create_main_keyboard(chat_id))
+                await state.update_message(chat_id, "<b>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:</b>\n\nУровни не установлены.", create_main_keyboard(chat_id))
         elif text == "Админ" and chat_id == ADMIN_ID:
             await state.get_admin_stats(chat_id)
 
