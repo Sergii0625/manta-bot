@@ -22,11 +22,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
 ALLOWED_USERS = [
     (501156257, "Сергей"),
-    (5070159060, "Васек"),
-    (1182677771, "Толик"),
-    (6322048522, "Кумец"),
-    (1725998320, "Света"),
-    (7009557842,  "Мой лайф")
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
@@ -35,67 +30,90 @@ CONFIRMATION_COUNT = 3
 
 # Функции для работы с PostgreSQL
 async def init_db():
-    conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_levels (
-            user_id BIGINT PRIMARY KEY,
-            levels TEXT
-        );
-        CREATE TABLE IF NOT EXISTS user_stats (
-            user_id BIGINT PRIMARY KEY,
-            stats TEXT
-        );
-    """)
-    return conn
+    try:
+        conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_levels (
+                user_id BIGINT PRIMARY KEY,
+                levels TEXT
+            );
+            CREATE TABLE IF NOT EXISTS user_stats (
+                user_id BIGINT PRIMARY KEY,
+                stats TEXT
+            );
+        """)
+        logger.info("Database initialized successfully")
+        return conn
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
 
 async def save_levels(user_id, levels):
-    conn = await init_db()
-    levels_str = json.dumps([str(level) for level in levels])
-    await conn.execute(
-        """
-        INSERT INTO user_levels (user_id, levels)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id) DO UPDATE SET levels = $2
-        """,
-        user_id, levels_str
-    )
-    await conn.close()
+    try:
+        conn = await init_db()
+        levels_str = json.dumps([str(level) for level in levels])
+        await conn.execute(
+            """
+            INSERT INTO user_levels (user_id, levels)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET levels = $2
+            """,
+            user_id, levels_str
+        )
+        await conn.close()
+        logger.debug(f"Levels saved for user_id={user_id}")
+    except Exception as e:
+        logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
+        raise
 
 async def load_levels(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT levels FROM user_levels WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result:
-        levels = json.loads(result['levels'])
-        return [Decimal(level) for level in levels]
-    return None
+    try:
+        conn = await init_db()
+        result = await conn.fetchrow(
+            "SELECT levels FROM user_levels WHERE user_id = $1",
+            user_id
+        )
+        await conn.close()
+        if result:
+            levels = json.loads(result['levels'])
+            return [Decimal(level) for level in levels]
+        return None
+    except Exception as e:
+        logger.error(f"Error loading levels for user_id={user_id}: {str(e)}")
+        raise
 
 async def save_stats(user_id, stats):
-    conn = await init_db()
-    stats_str = json.dumps(stats)
-    await conn.execute(
-        """
-        INSERT INTO user_stats (user_id, stats)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id) DO UPDATE SET stats = $2
-        """,
-        user_id, stats_str
-    )
-    await conn.close()
+    try:
+        conn = await init_db()
+        stats_str = json.dumps(stats)
+        await conn.execute(
+            """
+            INSERT INTO user_stats (user_id, stats)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET stats = $2
+            """,
+            user_id, stats_str
+        )
+        await conn.close()
+        logger.debug(f"Stats saved for user_id={user_id}")
+    except Exception as e:
+        logger.error(f"Error saving stats for user_id={user_id}: {str(e)}")
+        raise
 
 async def load_stats(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT stats FROM user_stats WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result:
-        return json.loads(result['stats'])
-    return None
+    try:
+        conn = await init_db()
+        result = await conn.fetchrow(
+            "SELECT stats FROM user_stats WHERE user_id = $1",
+            user_id
+        )
+        await conn.close()
+        if result:
+            return json.loads(result['stats'])
+        return None
+    except Exception as e:
+        logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
+        raise
 
 class BotState:
     def __init__(self, scanner):
@@ -167,7 +185,6 @@ class BotState:
         try:
             levels = await load_levels(user_id)
             if levels is None:
-                # Устанавливаем пустой список вместо уровней по умолчанию
                 levels = []
                 await save_levels(user_id, levels)
             self.user_states[user_id]['current_levels'] = levels
@@ -843,7 +860,26 @@ async def monitor_gas_callback(gas_value):
             await asyncio.sleep(1)
             await state.get_manta_gas(user_id)
         except Exception as e:
-            logger.error(f"Unexpected error for user {user_id}: {str(e)}")
+            logger.error(f"Error in monitor_gas_callback for user {user_id}: {str(e)}")
+            # Продолжаем выполнение для других пользователей, не прерывая цикл
+
+async def run_monitor_gas():
+    while True:
+        try:
+            logger.info("Starting monitor_gas task")
+            await scanner.monitor_gas(INTERVAL, monitor_gas_callback)
+        except Exception as e:
+            logger.error(f"Error in monitor_gas task: {str(e)}")
+            await asyncio.sleep(INTERVAL)  # Ждём перед следующей попыткой
+
+async def run_polling():
+    while True:
+        try:
+            logger.info("Starting polling task")
+            await state.dp.start_polling(state.bot)
+        except Exception as e:
+            logger.error(f"Error in polling task: {str(e)}")
+            await asyncio.sleep(5)  # Ждём 5 секунд перед перезапуском
 
 async def main():
     logger.info("Starting bot initialization")
@@ -853,14 +889,18 @@ async def main():
         state.init_user_stats(user_id)
         await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
-    try:
-        await asyncio.gather(
-            state.dp.start_polling(state.bot),
-            scanner.monitor_gas(INTERVAL, monitor_gas_callback),
-            return_exceptions=True
-        )
-    except Exception as e:
-        logger.error(f"Main loop error: {str(e)}")
+
+    # Запускаем задачи отдельно, чтобы они не блокировали друг друга
+    await asyncio.gather(
+        run_polling(),
+        run_monitor_gas(),
+        return_exceptions=True
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error in main: {str(e)}")
