@@ -890,12 +890,17 @@ async def main():
         await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
 
-    # Запускаем задачи отдельно, чтобы они не блокировали друг друга
-    await asyncio.gather(
-        run_polling(),
-        run_monitor_gas(),
-        return_exceptions=True
-    )
+    try:
+        # Запускаем задачи отдельно, чтобы они не блокировали друг друга
+        await asyncio.gather(
+            run_polling(),
+            run_monitor_gas(),
+            return_exceptions=True
+        )
+    finally:
+        # Закрываем сессию scanner
+        await scanner.close()
+        logger.info("Bot shutdown completed")
 
 if __name__ == "__main__":
     try:
