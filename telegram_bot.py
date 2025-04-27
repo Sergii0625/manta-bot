@@ -148,7 +148,7 @@ class BotState:
             self.user_stats[user_id][today] = default_stats.copy()
         else:
             for key in default_stats:
-                if key not in self.user_stats[user_id][today]:
+                if key not in self.user_states[user_id][today]:
                     self.user_stats[user_id][today][key] = 0
         asyncio.create_task(self.save_user_stats(user_id))
 
@@ -160,7 +160,7 @@ class BotState:
                 await self.bot.send_message(chat_id, "⛽ У вас нет доступа к этому боту.")
             except Exception as e:
                 logger.warning(f"Cannot notify chat_id={chat_id}: {e}")
-            logger.warning(f"Access denied for chat_id={chat_id}")
+            logger.warning(f"Access denied for chat_id={chat_id}")
             return False
         self.init_user_state(chat_id)
         self.init_user_stats(chat_id)
@@ -629,7 +629,7 @@ class BotState:
 def create_main_keyboard(chat_id):
     keyboard = [
         [types.KeyboardButton(text="Проверить газ"), types.KeyboardButton(text="Страх и Жадность")],
-        [types.Keyboard If you need further assistance or have additional questions, feel free to ask!Button(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
+        [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")]
     ]
     if chat_id == ADMIN_ID:
