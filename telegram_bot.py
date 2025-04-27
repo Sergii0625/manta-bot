@@ -893,7 +893,7 @@ async def main():
         await state.init_user_state(user_id)
         state.init_user_stats(user_id)
         await state.load_user_stats(user_id)
-1
+
     # Добавляем HTTP-сервер для Render
     app = web.Application()
     async def health_check(request):
