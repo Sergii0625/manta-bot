@@ -23,12 +23,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
 ALLOWED_USERS = [
     (501156257, "Сергей"),
+    (7009557842, "Мой лайф")
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-KEEP_ALIVE_INTERVAL = 300  # 5 минут для имитации активности
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -57,6 +57,7 @@ async def save_levels(user_id, levels):
         user_id, levels_str
     )
     await conn.close()
+    logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
 
 async def load_levels(user_id):
     conn = await init_db()
@@ -65,9 +66,15 @@ async def load_levels(user_id):
         user_id
     )
     await conn.close()
-    if result:
+    if result and result['levels']:
         levels = json.loads(result['levels'])
-        return [Decimal(level) for level in levels]
+        if not levels:  # Проверяем, пустой ли список
+            logger.debug(f"Empty levels list in DB for user_id={user_id}")
+            return None
+        loaded_levels = [Decimal(level) for level in levels]
+        logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
+        return loaded_levels
+    logger.debug(f"No levels found in DB for user_id={user_id}")
     return None
 
 async def save_stats(user_id, stats):
@@ -82,6 +89,7 @@ async def save_stats(user_id, stats):
         user_id, stats_str
     )
     await conn.close()
+    logger.debug(f"Saved stats for user_id={user_id}")
 
 async def load_stats(user_id):
     conn = await init_db()
@@ -91,7 +99,9 @@ async def load_stats(user_id):
     )
     await conn.close()
     if result:
+        logger.debug(f"Loaded stats for user_id={user_id}")
         return json.loads(result['stats'])
+    logger.debug(f"No stats found for user_id={user_id}")
     return None
 
 class BotState:
@@ -111,19 +121,7 @@ class BotState:
         self.user_stats = {}
         logger.info("BotState initialized")
 
-    async def keep_alive(self):
-        """Периодическая задача для имитации активности без уведомлений."""
-        while True:
-            try:
-                for user_id, _ in ALLOWED_USERS:
-                    await self.scanner.get_current_gas()  # Вызываем get_current_gas для имитации активности
-                    logger.debug(f"Keep-alive check for user_id={user_id}")
-                await asyncio.sleep(KEEP_ALIVE_INTERVAL)
-            except Exception as e:
-                logger.error(f"Keep-alive error: {str(e)}")
-                await asyncio.sleep(KEEP_ALIVE_INTERVAL)
-
-    def init_user_state(self, user_id):
+    async def init_user_state(self, user_id):
         if user_id not in self.user_states:
             self.user_states[user_id] = {
                 'prev_level': None,
@@ -133,7 +131,8 @@ class BotState:
                 'confirmation_state': {'count': 0, 'values': [], 'target_level': None, 'direction': None},
                 'notified_levels': set()
             }
-            asyncio.create_task(self.load_or_set_default_levels(user_id))
+            await self.load_or_set_default_levels(user_id)
+            logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}")
 
     def init_user_stats(self, user_id):
         if user_id not in self.user_stats:
@@ -150,6 +149,7 @@ class BotState:
                 if key not in self.user_stats[user_id][today]:
                     self.user_stats[user_id][today][key] = 0
         asyncio.create_task(self.save_user_stats(user_id))
+        logger.debug(f"Initialized user_stats for user_id={user_id}")
 
     async def check_access(self, message: types.Message):
         chat_id = message.chat.id
@@ -161,7 +161,7 @@ class BotState:
                 logger.warning(f"Cannot notify chat_id={chat_id}: {e}")
             logger.warning(f"Access denied for chat_id={chat_id}")
             return False
-        self.init_user_state(chat_id)
+        await self.init_user_state(chat_id)
         self.init_user_stats(chat_id)
         return True
 
@@ -175,17 +175,37 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         try:
             levels = await load_levels(user_id)
-            if levels is None:
-                # Устанавливаем пустой список вместо уровней по умолчанию
-                levels = []
+            if levels is None:  # Применяем уровни по умолчанию, если None
+                levels = [
+                    Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
+                    Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
+                    Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
+                    Decimal('0.004000'), Decimal('0.003500'), Decimal('0.003000'), Decimal('0.002500'),
+                    Decimal('0.002000'), Decimal('0.001500'), Decimal('0.001000'), Decimal('0.000900'),
+                    Decimal('0.000800'), Decimal('0.000700'), Decimal('0.000600'), Decimal('0.000500'),
+                    Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
+                    Decimal('0.000050')
+                ]
                 await save_levels(user_id, levels)
+                logger.info(f"Set default levels for user_id={user_id}: {levels}")
             self.user_states[user_id]['current_levels'] = levels
             self.user_states[user_id]['current_levels'].sort(reverse=True)
-            logger.info(f"Loaded levels for user_id={user_id}: {levels}")
+            logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
         except Exception as e:
-            logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to empty list")
-            self.user_states[user_id]['current_levels'] = []
+            logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default levels")
+            levels = [
+                Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
+                Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
+                Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
+                Decimal('0.004000'), Decimal('0.003500'), Decimal('0.003000'), Decimal('0.002500'),
+                Decimal('0.002000'), Decimal('0.001500'), Decimal('0.001000'), Decimal('0.000900'),
+                Decimal('0.000800'), Decimal('0.000700'), Decimal('0.000600'), Decimal('0.000500'),
+                Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
+                Decimal('0.000050')
+            ]
+            self.user_states[user_id]['current_levels'] = levels
             await save_levels(user_id, self.user_states[user_id]['current_levels'])
+            logger.info(f"Set default levels due to error for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
 
     async def save_levels(self, user_id, levels):
         levels.sort(reverse=True)
@@ -203,6 +223,7 @@ class BotState:
                 stats = {}
             self.user_stats[user_id] = stats
             self.init_user_stats(user_id)
+            logger.debug(f"Loaded user stats for user_id={user_id}")
         except Exception as e:
             logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
             self.init_user_stats(user_id)
@@ -274,7 +295,17 @@ class BotState:
                 return
 
             logger.info(f"Gas for chat_id={chat_id}: Slow={current_slow:.6f}")
-            base_message = f"<pre>⛽️ Manta Pacific Gas\n◆ <b>ТЕКУЩИЙ ГАЗ</b>:   {current_slow:.6f} Gwei</pre>"
+            # Подсчет ведущих нулей после десятичной точки
+            gas_str = f"{current_slow:.6f}"
+            decimal_part = gas_str.split('.')[1] if '.' in gas_str else ''
+            leading_zeros = 0
+            for char in decimal_part:
+                if char == '0':
+                    leading_zeros += 1
+                else:
+                    break
+            zeros_text = f"({leading_zeros})"
+            base_message = f"<pre>⛽️ Manta Pacific Gas\n◆ <b>ТЕКУЩИЙ ГАЗ</b>:   {current_slow:.6f} Gwei  {zeros_text}</pre>"
 
             self.user_states[chat_id]['last_measured_gas'] = current_slow
             prev_level = self.user_states[chat_id]['prev_level']
@@ -637,7 +668,7 @@ def create_main_keyboard(chat_id):
 
 def create_levels_menu_keyboard():
     keyboard = [
-        [types.KeyboardButton(text="0.0001–0.01")],
+        [types.KeyboardButton(text="0.00001–0.01")],
         [types.KeyboardButton(text="Удалить уровни")],
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
@@ -652,7 +683,7 @@ def create_level_input_keyboard():
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def create_delete_levels_keyboard(levels):
-    keyboard = [[types.KeyboardButton(text=f"Удалить {level:.4f} Gwei")] for level in levels]
+    keyboard = [[types.KeyboardButton(text=f"Удалить {level:.5f} Gwei")] for level in levels]
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -699,6 +730,7 @@ async def handle_main_button(message: types.Message):
         await state.update_message(chat_id, "Выберите действие для уровней уведомлений:", create_levels_menu_keyboard())
     elif text == "Уведомления":
         current_levels = state.user_states[chat_id]['current_levels']
+        logger.debug(f"Notification levels for chat_id={chat_id}: {current_levels}")
         if current_levels:
             levels_text = "\n".join([f"◆ {level:.6f} Gwei" for level in current_levels])
             formatted_message = f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>"
@@ -732,12 +764,12 @@ async def process_value(message: types.Message):
             elif text == "Назад":
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
-            elif text == "0.0001–0.01":
-                min_val, max_val = 0.0001, 0.01
+            elif text == "0.00001–0.01":
+                min_val, max_val = 0.00001, 0.01
                 state_data['range'] = (min_val, max_val)
                 state_data['levels'] = state.user_states[chat_id]['current_levels'].copy()
                 state_data['step'] = 'level_input'
-                await state.update_message(chat_id, "Введите уровень от 0,0001 до 0,01:", create_level_input_keyboard())
+                await state.update_message(chat_id, "Введите уровень от 0,00001 до 0,01:", create_level_input_keyboard())
             elif text == "Удалить уровни":
                 if not state.user_states[chat_id]['current_levels']:
                     await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
@@ -846,7 +878,7 @@ async def process_value(message: types.Message):
 
 async def monitor_gas_callback(gas_value):
     for user_id, _ in ALLOWED_USERS:
-        state.init_user_state(user_id)
+        await state.init_user_state(user_id)
         state.init_user_stats(user_id)
         try:
             await asyncio.sleep(1)
@@ -858,9 +890,8 @@ async def main():
     logger.info("Starting bot initialization")
     await state.set_menu_button()
     for user_id, _ in ALLOWED_USERS:
-        state.init_user_state(user_id)
+        await state.init_user_state(user_id)
         state.init_user_stats(user_id)
-        await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
 
     # Добавляем HTTP-сервер для Render
@@ -873,9 +904,6 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', 8000)
     await site.start()
     logger.info("HTTP server started on port 8000")
-
-    # Запускаем задачу keep_alive после инициализации событийного цикла
-    asyncio.create_task(state.keep_alive())
 
     # Задержка для завершения старых сессий
     await asyncio.sleep(5)
