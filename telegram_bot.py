@@ -274,8 +274,19 @@ class BotState:
                 return
 
             logger.info(f"Gas for chat_id={chat_id}: Slow={current_slow:.6f}")
-            base_message = f"<pre>⛽️ Manta Pacific Gas\n◆ <b>ТЕКУЩИЙ ГАЗ</b>:   {current_slow:.6f} Gwei</pre>"
+            # Подсчет ведущих нулей после десятичной точки
+            gas_str = f"{current_slow:.6f}"
+            decimal_part = gas_str.split('.')[1] if '.' in gas_str else ''
+            leading_zeros = 0
+            for char in decimal_part:
+                if char == '0':
+                    leading_zeros += 1
+                else:
+                    break
+            zeros_text = f"({leading_zeros})"
+            base_message = f"<pre>⛽️ Manta Pacific Gas\n◆ <b>ТЕКУЩИЙ ГАЗ</b>:   {current_slow:.6f} Gwei  {zeros_text}</pre>"
 
+            self.user_states[chat_id]['last_measured_gas'] = current_slow
             self.user_states[chat_id]['last_measured_gas'] = current_slow
             prev_level = self.user_states[chat_id]['prev_level']
             levels = self.user_states[chat_id]['current_levels']
@@ -464,7 +475,7 @@ class BotState:
             price_change_30d = manta_data["30d"]
             price_change_all = manta_data["all"]
             ath_price = manta_data["ath_price"]
-            ath_date = manta_data["ath_date"]
+            ath_date = manta_data["ath weather_date"]
             atl_price = manta_data["atl_price"]
             atl_date = manta_data["atl_date"]
 
