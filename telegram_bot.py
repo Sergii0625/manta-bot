@@ -176,15 +176,34 @@ class BotState:
         try:
             levels = await load_levels(user_id)
             if levels is None:
-                # Устанавливаем пустой список вместо уровней по умолчанию
-                levels = []
+                # Устанавливаем уровни по умолчанию
+                levels = [
+                    Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
+                    Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
+                    Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
+                    Decimal('0.004000'), Decimal('0.003500'), Decimal('0.003000'), Decimal('0.002500'),
+                    Decimal('0.002000'), Decimal('0.001500'), Decimal('0.001000'), Decimal('0.000900'),
+                    Decimal('0.000800'), Decimal('0.000700'), Decimal('0.000600'), Decimal('0.000500'),
+                    Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
+                    Decimal('0.000050')
+                ]
                 await save_levels(user_id, levels)
             self.user_states[user_id]['current_levels'] = levels
             self.user_states[user_id]['current_levels'].sort(reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {levels}")
         except Exception as e:
-            logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to empty list")
-            self.user_states[user_id]['current_levels'] = []
+            logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default levels")
+            levels = [
+                Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
+                Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
+                Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
+                Decimal('0.004000'), Decimal('0.003500'), Decimal('0.003000'), Decimal('0.002500'),
+                Decimal('0.002000'), Decimal('0.001500'), Decimal('0.001000'), Decimal('0.000900'),
+                Decimal('0.000800'), Decimal('0.000700'), Decimal('0.000600'), Decimal('0.000500'),
+                Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
+                Decimal('0.000050')
+            ]
+            self.user_states[user_id]['current_levels'] = levels
             await save_levels(user_id, self.user_states[user_id]['current_levels'])
 
     async def save_levels(self, user_id, levels):
@@ -286,7 +305,6 @@ class BotState:
             zeros_text = f"({leading_zeros})"
             base_message = f"<pre>⛽️ Manta Pacific Gas\n◆ <b>ТЕКУЩИЙ ГАЗ</b>:   {current_slow:.6f} Gwei  {zeros_text}</pre>"
 
-            self.user_states[chat_id]['last_measured_gas'] = current_slow
             self.user_states[chat_id]['last_measured_gas'] = current_slow
             prev_level = self.user_states[chat_id]['prev_level']
             levels = self.user_states[chat_id]['current_levels']
@@ -475,7 +493,7 @@ class BotState:
             price_change_30d = manta_data["30d"]
             price_change_all = manta_data["all"]
             ath_price = manta_data["ath_price"]
-            ath_date = manta_data["ath weather_date"]
+            ath_date = manta_data["ath_date"]
             atl_price = manta_data["atl_price"]
             atl_date = manta_data["atl_date"]
 
@@ -648,7 +666,7 @@ def create_main_keyboard(chat_id):
 
 def create_levels_menu_keyboard():
     keyboard = [
-        [types.KeyboardButton(text="0.0001–0.01")],
+        [types.KeyboardButton(text="0.00001–0.01")],
         [types.KeyboardButton(text="Удалить уровни")],
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
@@ -663,7 +681,7 @@ def create_level_input_keyboard():
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def create_delete_levels_keyboard(levels):
-    keyboard = [[types.KeyboardButton(text=f"Удалить {level:.4f} Gwei")] for level in levels]
+    keyboard = [[types.KeyboardButton(text=f"Удалить {level:.5f} Gwei")] for level in levels]
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -743,12 +761,12 @@ async def process_value(message: types.Message):
             elif text == "Назад":
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
-            elif text == "0.0001–0.01":
-                min_val, max_val = 0.0001, 0.01
+            elif text == "0.00001–0.01":
+                min_val, max_val = 0.00001, 0.01
                 state_data['range'] = (min_val, max_val)
                 state_data['levels'] = state.user_states[chat_id]['current_levels'].copy()
                 state_data['step'] = 'level_input'
-                await state.update_message(chat_id, "Введите уровень от 0,0001 до 0,01:", create_level_input_keyboard())
+                await state.update_message(chat_id, "Введите уровень от 0,00001 до 0,01:", create_level_input_keyboard())
             elif text == "Удалить уровни":
                 if not state.user_states[chat_id]['current_levels']:
                     await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
