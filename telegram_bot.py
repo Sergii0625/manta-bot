@@ -1,4 +1,3 @@
-```python
 import asyncio
 import logging
 import os
@@ -647,7 +646,7 @@ class BotState:
             logger.error(f"Error fetching Fear & Greed for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
-    async六个 def get_admin_stats(self, chat_id):
+    async def get_admin_stats(self, chat_id):
         if chat_id != ADMIN_ID:
             return
         today = datetime.now().date().isoformat()
@@ -938,4 +937,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
