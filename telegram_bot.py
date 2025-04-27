@@ -29,7 +29,6 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-KEEP_ALIVE_INTERVAL = 300  # 5 минут для имитации активности
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -121,18 +120,6 @@ class BotState:
         self.fear_greed_cooldown = 300
         self.user_stats = {}
         logger.info("BotState initialized")
-
-    async def keep_alive(self):
-        """Периодическая задача для имитации активности без уведомлений."""
-        while True:
-            try:
-                for user_id, _ in ALLOWED_USERS:
-                    await self.scanner.get_current_gas()  # Вызываем get_current_gas для имитации активности
-                    logger.debug(f"Keep-alive check for user_id={user_id}")
-                await asyncio.sleep(KEEP_ALIVE_INTERVAL)
-            except Exception as e:
-                logger.error(f"Keep-alive error: {str(e)}")
-                await asyncio.sleep(KEEP_ALIVE_INTERVAL)
 
     async def init_user_state(self, user_id):
         if user_id not in self.user_states:
@@ -917,9 +904,6 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', 8000)
     await site.start()
     logger.info("HTTP server started on port 8000")
-
-    # Запускаем задачу keep_alive после инициализации событийного цикла
-    asyncio.create_task(state.keep_alive())
 
     # Задержка для завершения старых сессий
     await asyncio.sleep(5)
