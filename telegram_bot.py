@@ -27,6 +27,7 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
+KEEP_ALIVE_INTERVAL = 300  # 5 минут для имитации активности
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -108,6 +109,20 @@ class BotState:
         self.fear_greed_cooldown = 300
         self.user_stats = {}
         logger.info("BotState initialized")
+        # Запускаем задачу для поддержания активности
+        asyncio.create_task(self.keep_alive())
+
+    async def keep_alive(self):
+        """Периодическая задача для имитации активности без уведомлений."""
+        while True:
+            try:
+                for user_id, _ in ALLOWED_USERS:
+                    await self.scanner.get_current_gas()  # Вызываем get_current_gas для имитации активности
+                    logger.debug(f"Keep-alive check for user_id={user_id}")
+                await asyncio.sleep(KEEP_ALIVE_INTERVAL)
+            except Exception as e:
+                logger.error(f"Keep-alive error: {str(e)}")
+                await asyncio.sleep(KEEP_ALIVE_INTERVAL)
 
     def init_user_state(self, user_id):
         if user_id not in self.user_states:
@@ -145,7 +160,7 @@ class BotState:
                 await self.bot.send_message(chat_id, "⛽ У вас нет доступа к этому боту.")
             except Exception as e:
                 logger.warning(f"Cannot notify chat_id={chat_id}: {e}")
-            logger.warning(f"Access denied for chat_id={chat_id}")
+            logger.warning(f"Access denied for chat_id={chat_id}")
             return False
         self.init_user_state(chat_id)
         self.init_user_stats(chat_id)
@@ -614,7 +629,7 @@ class BotState:
 def create_main_keyboard(chat_id):
     keyboard = [
         [types.KeyboardButton(text="Проверить газ"), types.KeyboardButton(text="Страх и Жадность")],
-        [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
+        [types.Keyboard If you need further assistance or have additional questions, feel free to ask!Button(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")]
     ]
     if chat_id == ADMIN_ID:
