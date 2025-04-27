@@ -124,7 +124,7 @@ class BotState:
                 logger.error(f"Keep-alive error: {str(e)}")
                 await asyncio.sleep(KEEP_ALIVE_INTERVAL)
 
-    def init_user_state(self, user_id):
+    async def init_user_state(self, user_id):
         if user_id not in self.user_states:
             self.user_states[user_id] = {
                 'prev_level': None,
@@ -134,7 +134,7 @@ class BotState:
                 'confirmation_state': {'count': 0, 'values': [], 'target_level': None, 'direction': None},
                 'notified_levels': set()
             }
-            asyncio.create_task(self.load_or_set_default_levels(user_id))
+            await self.load_or_set_default_levels(user_id)
 
     def init_user_stats(self, user_id):
         if user_id not in self.user_stats:
@@ -145,7 +145,7 @@ class BotState:
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0
         }
         if today not in self.user_stats[user_id]:
-            self.user_stats[user_id][today] = default_stats.copy()
+            self.user_states[user_id][today] = default_stats.copy()
         else:
             for key in default_stats:
                 if key not in self.user_stats[user_id][today]:
@@ -162,7 +162,7 @@ class BotState:
                 logger.warning(f"Cannot notify chat_id={chat_id}: {e}")
             logger.warning(f"Access denied for chat_id={chat_id}")
             return False
-        self.init_user_state(chat_id)
+        await self.init_user_state(chat_id)
         self.init_user_stats(chat_id)
         return True
 
@@ -876,7 +876,7 @@ async def process_value(message: types.Message):
 
 async def monitor_gas_callback(gas_value):
     for user_id, _ in ALLOWED_USERS:
-        state.init_user_state(user_id)
+        await state.init_user_state(user_id)
         state.init_user_stats(user_id)
         try:
             await asyncio.sleep(1)
@@ -888,9 +888,8 @@ async def main():
     logger.info("Starting bot initialization")
     await state.set_menu_button()
     for user_id, _ in ALLOWED_USERS:
-        state.init_user_state(user_id)
+        await state.init_user_state(user_id)
         state.init_user_stats(user_id)
-        await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
 
     # Добавляем HTTP-сервер для Render
