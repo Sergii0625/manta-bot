@@ -7,7 +7,6 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime
 import aiohttp
-from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 
@@ -28,34 +27,6 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-
-# Функции для HTTP-сервера и периодических пингов
-async def handle_ping(request):
-    logger.debug("Received ping request")
-    return web.Response(text="Bot is alive")
-
-async def start_web_server():
-    app = web.Application()
-    app.add_routes([web.get('/ping', handle_ping)])
-    runner = web.AppRunner(app)
-    await runner.setup()
-    port = int(os.getenv('PORT', 8080))  # Render задаёт PORT
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    logger.info(f"Web server started on port {port}")
-
-async def periodic_ping():
-    while True:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://localhost:{os.getenv('PORT', 8080)}/ping") as response:
-                    if response.status == 200:
-                        logger.debug("Self-ping successful")
-                    else:
-                        logger.warning(f"Self-ping failed with status {response.status}")
-        except Exception as e:
-            logger.error(f"Error during self-ping: {str(e)}")
-        await asyncio.sleep(600)  # 10 минут = 600 секунд
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -493,7 +464,7 @@ class BotState:
             message = (
                 f"<pre>"
                 f"🦎 Данные с CoinGecko:\n"
-                f"◆ Manta/USDT: ${float(price):.3f}\n\n"
+                f"◆ MANTA/USDT: ${float(price):.3f}\n\n"
                 f"◆ ИЗМЕНЕНИЕ:\n"
                 f"◆ 24 ЧАСА:     {float(price_change_24h):>6.2f}%\n"
                 f"◆ 7 ДНЕЙ:      {float(price_change_7d):>6.2f}%\n"
@@ -530,13 +501,44 @@ class BotState:
                 reverse=True
             )
             for name, data in sorted_by_24h:
-                price = data["price"]
-                price_24h = data["24h"]
-                price_str = f"${float(price):.3f}" if price != "Н/Д" else "Н/Д"
-                change_str = f"{float(price_24h):+.2f}%" if price_24h != "Н/Д" else "Н/Д"
-                message += f"◆ {name:<10}: {price_str:>8} ({change_str:>7})\n"
+                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                change_str = f"{float(data['24h']):>6.2f}%" if data['24h'] not in ("Н/Д", None) else "Н/Д"
+                message += f"◆ {name:<9}: {price_str} | {change_str}\n"
 
+            message += "\n◆ Сравнение L2 токенов (7 дней):\n"
+            sorted_by_7d = sorted(
+                token_data.items(),
+                key=lambda x: float(x[1]["7d"]) if x[1]["7d"] not in ("Н/Д", None) else float('-inf'),
+                reverse=True
+            )
+            for name, data in sorted_by_7d:
+                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                change_str = f"{float(data['7d']):>6.2f}%" if data['7d'] not in ("Н/Д", None) else "Н/Д"
+                message += f"◆ {name:<9}: {price_str} | {change_str}\n"
+
+            message += "\n◆ Сравнение L2 токенов (месяц):\n"
+            sorted_by_30d = sorted(
+                token_data.items(),
+                key=lambda x: float(x[1]["30d"]) if x[1]["30d"] not in ("Н/Д", None) else float('-inf'),
+                reverse=True
+            )
+            for name, data in sorted_by_30d:
+                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                change_str = f"{float(data['30d']):>6.2f}%" if data['30d'] not in ("Н/Д", None) else "Н/Д"
+                message += f"◆ {name:<9}: {price_str} | {change_str}\n"
+
+            message += "\n◆ Сравнение L2 токенов (все время):\n"
+            sorted_by_all = sorted(
+                token_data.items(),
+                key=lambda x: float(x[1]["all"]) if x[1]["all"] not in ("Н/Д", None) else float('-inf'),
+                reverse=True
+            )
+            for name, data in sorted_by_all:
+                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                change_str = f"{float(data['all']):>6.2f}%" if data['all'] not in ("Н/Д", None) else "Н/Д"
+                message += f"◆ {name:<9}: {price_str} | {change_str}\n"
             message += "</pre>"
+
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
         except Exception as e:
@@ -545,184 +547,311 @@ class BotState:
 
     async def get_fear_greed(self, chat_id):
         try:
-            fear_greed_data = await self.fetch_fear_greed()
-            if not fear_greed_data:
-                await self.update_message(chat_id, "⚠️ Не удалось получить данные от CoinMarketCap.", create_main_keyboard(chat_id))
+            fg_data = await self.fetch_fear_greed()
+            if not fg_data:
+                await self.update_message(chat_id, "⚠️ Не удалось получить данные Fear & Greed от CoinMarketCap.", create_main_keyboard(chat_id))
                 return
 
-            current = fear_greed_data["current"]
-            yesterday = fear_greed_data["yesterday"]
-            week_ago = fear_greed_data["week_ago"]
-            month_ago = fear_greed_data["month_ago"]
-            year_max = fear_greed_data["year_max"]
-            year_min = fear_greed_data["year_min"]
+            current_value = fg_data["current"]["value"]
+            yesterday_value = fg_data["yesterday"]["value"]
+            week_ago_value = fg_data["week_ago"]["value"]
+            month_ago_value = fg_data["month_ago"]["value"]
+            max_year_value = fg_data["year_max"]["value"]
+            max_year_date = fg_data["year_max"]["date"]
+            min_year_value = fg_data["year_min"]["value"]
+            min_year_date = fg_data["year_min"]["date"]
+
+            bar_length = 20
+            filled = int(current_value / 100 * bar_length)
+            progress_bar = f"🔴 {'█' * filled}{'▁' * (bar_length - filled)} 🟢"
 
             message = (
                 f"<pre>"
-                f"😨 Fear & Greed Index (CMC):\n"
-                f"◆ Текущий:      {current['value']:>2} ({current['category']})\n"
-                f"◆ Вчера:        {yesterday['value']:>2} ({yesterday['category']})\n"
-                f"◆ Неделю назад: {week_ago['value']:>2} ({week_ago['category']})\n"
-                f"◆ Месяц назад:  {month_ago['value']:>2} ({month_ago['category']})\n"
-                f"◆ Макс за год:  {year_max['value']:>2} ({year_max['category']}, {year_max['date']})\n"
-                f"◆ Мин за год:   {year_min['value']:>2} ({year_min['category']}, {year_min['date']})\n"
+                f"◆ Индекс страха и жадности: {current_value}\n"
+                f"\n"
+                f"{progress_bar}\n"
+                f"\n"
+                f"История:\n"
+                f"🕒 Вчера: {yesterday_value}\n"
+                f"🕒 Прошлая неделя: {week_ago_value}\n"
+                f"🕒 Прошлый месяц: {month_ago_value}\n"
+                f"\n"
+                f"Годовые экстремумы:\n"
+                f"📈 Макс: {max_year_value} ({max_year_date})\n"
+                f"📉 Мин: {min_year_value} ({min_year_date})"
                 f"</pre>"
             )
+
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
         except Exception as e:
             logger.error(f"Error fetching Fear & Greed for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
+    async def get_admin_stats(self, chat_id):
+        if chat_id != ADMIN_ID:
+            return
+        today = datetime.now().date().isoformat()
+        message = "<b>Статистика использования бота за сегодня:</b>\n\n<pre>"
+        has_activity = False
+        for user_id, user_name in ALLOWED_USERS:
+            if user_id == ADMIN_ID:
+                continue
+            await self.load_user_stats(user_id)
+            stats = self.user_stats[user_id].get(today, {})
+            if any(stats.values()):
+                message += f"{user_id} {user_name}\n"
+                for action, count in stats.items():
+                    if count > 0:
+                        message += f"{action} - {count}\n"
+                message += "\n"
+                has_activity = True
+        message += "</pre>"
+        if not has_activity:
+            message = "<b>Статистика использования бота за сегодня:</b>\n\nСегодня никто из пользователей (кроме админа) не использовал бота."
+        await self.update_message(chat_id, message, create_main_keyboard(chat_id))
+
 def create_main_keyboard(chat_id):
-    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
-    buttons = [
-        types.KeyboardButton("⛽ Проверить газ"),
-        types.KeyboardButton("🦎 Manta Price"),
-        types.KeyboardButton("📊 Сравнение L2"),
-        types.KeyboardButton("📈 Задать уровни"),
-        types.KeyboardButton("🔔 Уведомления"),
-        types.KeyboardButton("😨 Страх и Жадность")
+    keyboard = [
+        [types.KeyboardButton(text="Проверить газ"), types.KeyboardButton(text="Страх и Жадность")],
+        [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
+        [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")]
     ]
     if chat_id == ADMIN_ID:
-        buttons.append(types.KeyboardButton("🛠 Админ"))
-    keyboard.add(*buttons)
-    return keyboard
+        keyboard.append([types.KeyboardButton(text="Админ")])
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-async def monitor_gas_callback(chat_id, gas_price):
-    state = state  # Assuming global state; adjust if passed differently
-    await state.get_manta_gas(chat_id)
+def create_levels_menu_keyboard():
+    keyboard = [
+        [types.KeyboardButton(text="0.0001–0.01")],
+        [types.KeyboardButton(text="Удалить уровни")],
+        [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def create_level_input_keyboard():
+    keyboard = [
+        [types.KeyboardButton(text="Добавить еще уровень")],
+        [types.KeyboardButton(text="Завершить")],
+        [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def create_delete_levels_keyboard(levels):
+    keyboard = [[types.KeyboardButton(text=f"Удалить {level:.4f} Gwei")] for level in levels]
+    keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+scanner = Scanner()
+state = BotState(scanner)
+
+@state.dp.message(Command("start"))
+async def start_command(message: types.Message):
+    if not await state.check_access(message):
+        return
+    chat_id = message.chat.id
+    logger.info(f"Start command received from chat_id={chat_id}")
+    await state.update_message(chat_id, "<b>Бот для Manta Pacific запущен.</b>\nВыберите действие:", create_main_keyboard(chat_id))
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Failed to delete start command message_id={message.message_id}: {e}")
+
+@state.dp.message(lambda message: message.text in ["Проверить газ", "Manta Price", "Сравнение L2", "Страх и Жадность", "Задать уровни", "Уведомления", "Админ"])
+async def handle_main_button(message: types.Message):
+    if not await state.check_access(message):
+        return
+    chat_id = message.chat.id
+    text = message.text
+    logger.debug(f"Button pressed: {text} by chat_id={chat_id}")
+
+    today = datetime.now().date().isoformat()
+    state.user_stats[chat_id][today][text] += 1
+    await state.save_user_stats(chat_id)
+
+    if chat_id in state.pending_commands and text != "Задать уровни":
+        del state.pending_commands[chat_id]
+
+    if text == "Проверить газ":
+        await state.get_manta_gas(chat_id, force_base_message=True)
+    elif text == "Manta Price":
+        await state.get_manta_price(chat_id)
+    elif text == "Сравнение L2":
+        await state.get_l2_comparison(chat_id)
+    elif text == "Страх и Жадность":
+        await state.get_fear_greed(chat_id)
+    elif text == "Задать уровни":
+        state.pending_commands[chat_id] = {'step': 'range_selection'}
+        await state.update_message(chat_id, "Выберите действие для уровней уведомлений:", create_levels_menu_keyboard())
+    elif text == "Уведомления":
+        current_levels = state.user_states[chat_id]['current_levels']
+        if current_levels:
+            levels_text = "\n".join([f"◆ {level:.4f} Gwei" for level in current_levels])
+            formatted_message = f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>"
+            await state.update_message(chat_id, formatted_message, create_main_keyboard(chat_id))
+        else:
+            await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
+    elif text == "Админ" and chat_id == ADMIN_ID:
+        await state.get_admin_stats(chat_id)
+
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
+
+@state.dp.message()
+async def process_value(message: types.Message):
+    if not await state.check_access(message):
+        return
+    chat_id = message.chat.id
+    text = message.text.strip()
+
+    if chat_id not in state.pending_commands:
+        await state.update_message(chat_id, "Выберите действие с помощью кнопок.", create_main_keyboard(chat_id))
+    else:
+        state_data = state.pending_commands[chat_id]
+
+        if state_data['step'] == 'range_selection':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
+            elif text == "0.0001–0.01":
+                min_val, max_val = 0.0001, 0.01
+                state_data['range'] = (min_val, max_val)
+                state_data['levels'] = state.user_states[chat_id]['current_levels'].copy()
+                state_data['step'] = 'level_input'
+                await state.update_message(chat_id, "Введите уровень от 0,0001 до 0,01:", create_level_input_keyboard())
+            elif text == "Удалить уровни":
+                if not state.user_states[chat_id]['current_levels']:
+                    await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
+                    del state.pending_commands[chat_id]
+                else:
+                    state_data['step'] = 'delete_level_selection'
+                    await state.update_message(chat_id, "Выберите уровень для удаления:", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
+            else:
+                await state.update_message(chat_id, "Выберите действие из предложенных.", create_levels_menu_keyboard())
+
+        elif state_data['step'] == 'level_input':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                state_data['step'] = 'range_selection'
+                await state.update_message(chat_id, "Возврат к выбору диапазона.", create_levels_menu_keyboard())
+            elif text == "Добавить еще уровень" or text == "Завершить":
+                await state.update_message(chat_id, "Сначала введите уровень.", create_level_input_keyboard())
+            else:
+                try:
+                    text_normalized = text.replace(',', '.')
+                    level = Decimal(text_normalized)
+                    min_val, max_val = state_data['range']
+                    if not (min_val <= float(level) <= max_val):
+                        await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
+                        return
+
+                    if level not in state_data['levels']:
+                        state_data['levels'].append(level)
+                        await state.save_levels(chat_id, state_data['levels'])
+                    if len(state_data['levels']) >= 100:
+                        del state.pending_commands[chat_id]
+                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
+                    else:
+                        state_data['step'] = 'level_choice'
+                        await state.update_message(chat_id, f"Уровень {level:.4f} добавлен. Что дальше?", create_level_input_keyboard())
+                except ValueError:
+                    await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
+
+        elif state_data['step'] == 'level_choice':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                state_data['step'] = 'level_input'
+                min_val, max_val = state_data['range']
+                await state.update_message(chat_id, f"Введите уровень от {min_val} до {max_val}:", create_level_input_keyboard())
+            elif text == "Добавить еще уровень":
+                state_data['step'] = 'level_input'
+                min_val, max_val = state_data['range']
+                await state.update_message(chat_id, f"Введите следующий уровень (в пределах {min_val}–{max_val}):", create_level_input_keyboard())
+            elif text == "Завершить":
+                await state.save_levels(chat_id, state_data['levels'])
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Уровни сохранены.", create_main_keyboard(chat_id))
+            else:
+                try:
+                    text_normalized = text.replace(',', '.')
+                    level = Decimal(text_normalized)
+                    min_val, max_val = state_data['range']
+                    if not (min_val <= float(level) <= max_val):
+                        await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
+                        return
+
+                    if level not in state_data['levels']:
+                        state_data['levels'].append(level)
+                        await state.save_levels(chat_id, state_data['levels'])
+                    if len(state_data['levels']) >= 100:
+                        del state.pending_commands[chat_id]
+                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
+                    else:
+                        state_data['step'] = 'level_choice'
+                        await state.update_message(chat_id, f"Уровень {level:.4f} добавлен. Что дальше?", create_level_input_keyboard())
+                except ValueError:
+                    await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
+
+        elif state_data['step'] == 'delete_level_selection':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Удаление уровней отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                state_data['step'] = 'range_selection'
+                await state.update_message(chat_id, "Возврат к выбору действия.", create_levels_menu_keyboard())
+            elif text.startswith("Удалить "):
+                level_str = text.replace("Удалить ", "").replace(" Gwei", "")
+                try:
+                    level_to_delete = Decimal(level_str)
+                    if level_to_delete in state.user_states[chat_id]['current_levels']:
+                        state.user_states[chat_id]['current_levels'].remove(level_to_delete)
+                        await state.save_levels(chat_id, state.user_states[chat_id]['current_levels'])
+                        del state.pending_commands[chat_id]
+                        await state.update_message(chat_id, f"Уровень {level_to_delete:.4f} Gwei удалён.", create_main_keyboard(chat_id))
+                    else:
+                        await state.update_message(chat_id, "Уровень не найден.", create_main_keyboard(chat_id))
+                        del state.pending_commands[chat_id]
+                except ValueError:
+                    await state.update_message(chat_id, "Ошибка при удалении уровня.", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
+            else:
+                await state.update_message(chat_id, "Выберите уровень для удаления.", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
+
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
+
+async def monitor_gas_callback(gas_value):
+    for user_id, _ in ALLOWED_USERS:
+        state.init_user_state(user_id)
+        state.init_user_stats(user_id)
+        try:
+            await asyncio.sleep(1)
+            await state.get_manta_gas(user_id)
+        except Exception as e:
+            logger.error(f"Unexpected error for user {user_id}: {str(e)}")
 
 async def main():
     logger.info("Starting bot initialization")
-    scanner = Scanner()
-    global state
-    state = BotState(scanner)
     await state.set_menu_button()
     for user_id, _ in ALLOWED_USERS:
         state.init_user_state(user_id)
         state.init_user_stats(user_id)
         await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
-
-    # Регистрация обработчиков команд
-    @state.dp.message(Command("start"))
-    async def cmd_start(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            await state.update_message(chat_id, "👋 Добро пожаловать! Выберите действие:", create_main_keyboard(chat_id))
-
-    @state.dp.message(lambda message: message.text == "⛽ Проверить газ")
-    async def check_gas(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Проверить газ"] += 1
-            await state.save_user_stats(chat_id)
-            await state.get_manta_gas(chat_id, force_base_message=True)
-
-    @state.dp.message(lambda message: message.text == "🦎 Manta Price")
-    async def manta_price(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Manta Price"] += 1
-            await state.save_user_stats(chat_id)
-            await state.get_manta_price(chat_id)
-
-    @state.dp.message(lambda message: message.text == "📊 Сравнение L2")
-    async def l2_comparison(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Сравнение L2"] += 1
-            await state.save_user_stats(chat_id)
-            await state.get_l2_comparison(chat_id)
-
-    @state.dp.message(lambda message: message.text == "😨 Страх и Жадность")
-    async def fear_greed(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Страх и Жадность"] += 1
-            await state.save_user_stats(chat_id)
-            await state.get_fear_greed(chat_id)
-
-    @state.dp.message(lambda message: message.text == "📈 Задать уровни")
-    async def set_levels(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Задать уровни"] += 1
-            await state.save_user_stats(chat_id)
-            state.pending_commands[chat_id] = "set_levels"
-            levels = state.user_states[chat_id]['current_levels']
-            levels_str = ", ".join([f"{float(level):.5f}" for level in levels]) if levels else "не заданы"
-            await state.update_message(chat_id, f"📈 Текущие уровни: {levels_str}\n\nВведите новые уровни (через запятую, например: 10, 20, 30):")
-
-    @state.dp.message(lambda message: message.text == "🔔 Уведомления")
-    async def toggle_notifications(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Уведомления"] += 1
-            await state.save_user_stats(chat_id)
-            levels = state.user_states[chat_id]['current_levels']
-            if not levels:
-                await state.update_message(chat_id, "🔔 Уведомления неактивны: уровни не заданы. Используйте 'Задать уровни'.", create_main_keyboard(chat_id))
-            else:
-                state.user_states[chat_id]['notified_levels'].clear()
-                await state.update_message(chat_id, "🔔 Уведомления сброшены. Вы получите новые уведомления при пересечении уровней.", create_main_keyboard(chat_id))
-
-    @state.dp.message(lambda message: message.text == "🛠 Админ" and message.chat.id == ADMIN_ID)
-    async def admin_panel(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            today = datetime.now().date().isoformat()
-            state.user_stats[chat_id][today]["Админ"] += 1
-            await state.save_user_stats(chat_id)
-            stats_message = "<b>📊 Статистика использования:</b>\n"
-            for user_id, stats in state.user_stats.items():
-                user_name = next((name for uid, name in ALLOWED_USERS if uid == user_id), "Unknown")
-                stats_message += f"\n<b>{user_name} (ID: {user_id})</b>:\n"
-                for date, commands in stats.items():
-                    stats_message += f"<b>{date}</b>:\n"
-                    for cmd, count in commands.items():
-                        stats_message += f"  {cmd}: {count}\n"
-            await state.update_message(chat_id, stats_message, create_main_keyboard(chat_id))
-
-    @state.dp.message()
-    async def handle_message(message: types.Message):
-        if await state.check_access(message):
-            chat_id = message.chat.id
-            if chat_id in state.pending_commands:
-                command = state.pending_commands[chat_id]
-                if command == "set_levels":
-                    try:
-                        levels = [Decimal(level.strip()) for level in message.text.split(",") if level.strip()]
-                        if not levels:
-                            await state.update_message(chat_id, "⚠️ Уровни не указаны. Введите уровни через запятую (например: 10, 20, 30).")
-                            return
-                        await state.save_levels(chat_id, levels)
-                        levels_str = ", ".join([f"{float(level):.5f}" for level in levels])
-                        state.user_states[chat_id]['notified_levels'].clear()
-                        await state.update_message(chat_id, f"📈 Уровни успешно заданы: {levels_str}", create_main_keyboard(chat_id))
-                        del state.pending_commands[chat_id]
-                    except Exception as e:
-                        await state.update_message(chat_id, f"⚠️ Ошибка: Неверный формат уровней. Введите числа через запятую (например: 10, 20, 30).")
-                        logger.error(f"Error setting levels for chat_id={chat_id}: {str(e)}")
-                else:
-                    del state.pending_commands[chat_id]
-                    await state.update_message(chat_id, "⚠️ Неизвестная команда. Выберите действие:", create_main_keyboard(chat_id))
-            else:
-                await state.update_message(chat_id, "👋 Выберите действие:", create_main_keyboard(chat_id))
-
     try:
         await asyncio.gather(
             state.dp.start_polling(state.bot),
             scanner.monitor_gas(INTERVAL, monitor_gas_callback),
-            start_web_server(),  # Запуск HTTP-сервера
-            periodic_ping(),     # Запуск периодических пингов
             return_exceptions=True
         )
     except Exception as e:
