@@ -109,8 +109,6 @@ class BotState:
         self.fear_greed_cooldown = 300
         self.user_stats = {}
         logger.info("BotState initialized")
-        # Запускаем задачу для поддержания активности
-        asyncio.create_task(self.keep_alive())
 
     async def keep_alive(self):
         """Периодическая задача для имитации активности без уведомлений."""
@@ -148,7 +146,7 @@ class BotState:
             self.user_stats[user_id][today] = default_stats.copy()
         else:
             for key in default_stats:
-                if key not in self.user_states[user_id][today]:
+                if key not in self.user_stats[user_id][today]:
                     self.user_stats[user_id][today][key] = 0
         asyncio.create_task(self.save_user_stats(user_id))
 
@@ -863,6 +861,8 @@ async def main():
         state.init_user_stats(user_id)
         await state.load_or_set_default_levels(user_id)
         await state.load_user_stats(user_id)
+    # Запускаем задачу keep_alive после инициализации событийного цикла
+    asyncio.create_task(state.keep_alive())
     try:
         await asyncio.gather(
             state.dp.start_polling(state.bot),
