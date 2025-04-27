@@ -1,3 +1,4 @@
+```python
 import asyncio
 import logging
 import os
@@ -58,6 +59,7 @@ async def save_levels(user_id, levels):
         user_id, levels_str
     )
     await conn.close()
+    logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
 
 async def load_levels(user_id):
     conn = await init_db()
@@ -66,9 +68,15 @@ async def load_levels(user_id):
         user_id
     )
     await conn.close()
-    if result:
+    if result and result['levels']:
         levels = json.loads(result['levels'])
-        return [Decimal(level) for level in levels]
+        if not levels:  # Проверяем, пустой ли список
+            logger.debug(f"Empty levels list in DB for user_id={user_id}")
+            return None
+        loaded_levels = [Decimal(level) for level in levels]
+        logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
+        return loaded_levels
+    logger.debug(f"No levels found in DB for user_id={user_id}")
     return None
 
 async def save_stats(user_id, stats):
@@ -83,6 +91,7 @@ async def save_stats(user_id, stats):
         user_id, stats_str
     )
     await conn.close()
+    logger.debug(f"Saved stats for user_id={user_id}")
 
 async def load_stats(user_id):
     conn = await init_db()
@@ -92,7 +101,9 @@ async def load_stats(user_id):
     )
     await conn.close()
     if result:
+        logger.debug(f"Loaded stats for user_id={user_id}")
         return json.loads(result['stats'])
+    logger.debug(f"No stats found for user_id={user_id}")
     return None
 
 class BotState:
@@ -135,6 +146,7 @@ class BotState:
                 'notified_levels': set()
             }
             await self.load_or_set_default_levels(user_id)
+            logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}")
 
     def init_user_stats(self, user_id):
         if user_id not in self.user_stats:
@@ -145,12 +157,13 @@ class BotState:
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0
         }
         if today not in self.user_stats[user_id]:
-            self.user_states[user_id][today] = default_stats.copy()
+            self.user_stats[user_id][today] = default_stats.copy()
         else:
             for key in default_stats:
                 if key not in self.user_stats[user_id][today]:
                     self.user_stats[user_id][today][key] = 0
         asyncio.create_task(self.save_user_stats(user_id))
+        logger.debug(f"Initialized user_stats for user_id={user_id}")
 
     async def check_access(self, message: types.Message):
         chat_id = message.chat.id
@@ -176,8 +189,7 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         try:
             levels = await load_levels(user_id)
-            if levels is None:
-                # Устанавливаем уровни по умолчанию
+            if levels is None:  # Применяем уровни по умолчанию, если None
                 levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
                     Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
@@ -189,9 +201,10 @@ class BotState:
                     Decimal('0.000050')
                 ]
                 await save_levels(user_id, levels)
+                logger.info(f"Set default levels for user_id={user_id}: {levels}")
             self.user_states[user_id]['current_levels'] = levels
             self.user_states[user_id]['current_levels'].sort(reverse=True)
-            logger.info(f"Loaded levels for user_id={user_id}: {levels}")
+            logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
         except Exception as e:
             logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default levels")
             levels = [
@@ -206,6 +219,7 @@ class BotState:
             ]
             self.user_states[user_id]['current_levels'] = levels
             await save_levels(user_id, self.user_states[user_id]['current_levels'])
+            logger.info(f"Set default levels due to error for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
 
     async def save_levels(self, user_id, levels):
         levels.sort(reverse=True)
@@ -223,6 +237,7 @@ class BotState:
                 stats = {}
             self.user_stats[user_id] = stats
             self.init_user_stats(user_id)
+            logger.debug(f"Loaded user stats for user_id={user_id}")
         except Exception as e:
             logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
             self.init_user_stats(user_id)
@@ -632,7 +647,7 @@ class BotState:
             logger.error(f"Error fetching Fear & Greed for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
-    async def get_admin_stats(self, chat_id):
+    async六个 def get_admin_stats(self, chat_id):
         if chat_id != ADMIN_ID:
             return
         today = datetime.now().date().isoformat()
@@ -729,6 +744,7 @@ async def handle_main_button(message: types.Message):
         await state.update_message(chat_id, "Выберите действие для уровней уведомлений:", create_levels_menu_keyboard())
     elif text == "Уведомления":
         current_levels = state.user_states[chat_id]['current_levels']
+        logger.debug(f"Notification levels for chat_id={chat_id}: {current_levels}")
         if current_levels:
             levels_text = "\n".join([f"◆ {level:.6f} Gwei" for level in current_levels])
             formatted_message = f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>"
@@ -922,3 +938,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
