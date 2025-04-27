@@ -924,7 +924,7 @@ async def main():
 
     # Задержка для завершения старых сессий
     await asyncio.sleep(5)
-1
+
     try:
         await asyncio.gather(
             state.dp.start_polling(state.bot),
