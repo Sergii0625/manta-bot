@@ -881,8 +881,6 @@ async def monitor_gas_callback(gas_value):
     # Пропускаем уведомление при первом запуске
     if state.is_first_run:
         for user_id, _ in ALLOWED_USERS:
-            await state.init_user_state(user_id)
-            state.init_user_stats(user_id)
             state.user_states[user_id]['last_measured_gas'] = gas_value  # Сохраняем начальное значение газа
             state.user_states[user_id]['prev_level'] = gas_value  # Устанавливаем prev_level
             logger.info(f"First run: Set initial gas value for user_id={user_id}: {gas_value:.6f}")
@@ -891,8 +889,6 @@ async def monitor_gas_callback(gas_value):
 
     # Обычная логика мониторинга газа для последующих вызовов
     for user_id, _ in ALLOWED_USERS:
-        await state.init_user_state(user_id)
-        state.init_user_stats(user_id)
         try:
             await asyncio.sleep(1)
             await state.get_manta_gas(user_id)
@@ -921,16 +917,15 @@ async def main():
     # Задержка для завершения старых сессий
     await asyncio.sleep(5)
 
-    try:
-        await asyncio.gather(
-            state.dp.start_polling(state.bot),
-            scanner.monitor_gas(INTERVAL, monitor_gas_callback),
-            return_exceptions=True
-        )
-    except Exception as e:
-        logger.error(f"Main loop error: {str(e)}")
-    finally:
-        await runner.cleanup()
+    tasks = [
+        state.dp.start_polling(state.bot),
+        scanner.monitor_gas(INTERVAL, monitor_gas_callback)
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"Task {i} failed with exception: {str(result)}")
+    await runner.cleanup()
 
 if __name__ == "__main__":
     asyncio.run(main())
