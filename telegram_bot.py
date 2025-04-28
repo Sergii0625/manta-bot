@@ -928,7 +928,7 @@ async def main():
             return_exceptions=True
         )
     except Exception as e:
-        logger.error(f"Main loop error: {str(e)}")1
+        logger.error(f"Main loop error: {str(e)}")
     finally:
         await runner.cleanup()
 
