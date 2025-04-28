@@ -119,6 +119,7 @@ class BotState:
         self.fear_greed_time = None
         self.fear_greed_cooldown = 300
         self.user_stats = {}
+        self.is_first_run = True  # Добавляем флаг для первого запуска
         logger.info("BotState initialized")
 
     async def init_user_state(self, user_id):
@@ -877,6 +878,18 @@ async def process_value(message: types.Message):
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
 async def monitor_gas_callback(gas_value):
+    # Пропускаем уведомление при первом запуске
+    if state.is_first_run:
+        for user_id, _ in ALLOWED_USERS:
+            await state.init_user_state(user_id)
+            state.init_user_stats(user_id)
+            state.user_states[user_id]['last_measured_gas'] = gas_value  # Сохраняем начальное значение газа
+            state.user_states[user_id]['prev_level'] = gas_value  # Устанавливаем prev_level
+            logger.info(f"First run: Set initial gas value for user_id={user_id}: {gas_value:.6f}")
+        state.is_first_run = False  # После первого запуска устанавливаем флаг в False
+        return
+
+    # Обычная логика мониторинга газа для последующих вызовов
     for user_id, _ in ALLOWED_USERS:
         await state.init_user_state(user_id)
         state.init_user_stats(user_id)
