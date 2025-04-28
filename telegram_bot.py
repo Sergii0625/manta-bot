@@ -856,7 +856,6 @@ async def process_value(message: types.Message):
                 await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
                 logger.debug(f"Действие отменено для chat_id={chat_id}")
             elif text == "Назад":
- Interpolated Response:
                 state_data['step'] = 'range_selection'
                 await state.update_message(chat_id, "Возврат к выбору диапазона.", create_levels_menu_keyboard())
                 logger.debug(f"Возврат к выбору диапазона для chat_id={chat_id}")
