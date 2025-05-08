@@ -7,7 +7,6 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime
 import aiohttp
-from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 
@@ -123,7 +122,7 @@ class BotState:
         self.fear_greed_time = None
         self.fear_greed_cooldown = 300
         self.user_stats = {}
-        self.is_first_run = True  # Добавляем флаг для первого запуска
+        self.is_first_run = True
         logger.info("BotState initialized")
 
     async def init_user_state(self, user_id):
@@ -133,7 +132,7 @@ class BotState:
                 'last_measured_gas': None,
                 'current_levels': [],
                 'active_level': None,
-                'confirmation_state': {'count': 0, 'values': [], 'target_level': None, 'direction': None},
+                'confirmation_states': {},  # Изменено: словарь для хранения состояний по уровням
                 'notified_levels': set()
             }
             await self.load_or_set_default_levels(user_id)
@@ -180,7 +179,7 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         try:
             levels = await load_levels(user_id)
-            if levels is None:  # Применяем уровни по умолчанию, если None
+            if levels is None:
                 levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
                     Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
@@ -246,14 +245,21 @@ class BotState:
             self.message_ids[chat_id] = msg.message_id
             logger.debug(f"Sent new message_id={msg.message_id} for chat_id={chat_id}")
         except Exception as e:
-            logger.error(f"Error sending message to chat_id={chat_id}: {str(e)}")
+            logger.error(f"Failed to send message to chat_id={chat_id}: {str(e)}")
+            raise
+
+    async def reset_notified_levels(self, chat_id):
+        self.user_states[chat_id]['notified_levels'].clear()
+        logger.info(f"Cleared notified levels for chat_id={chat_id}")
 
     async def confirm_level_crossing(self, chat_id, initial_value, direction, target_level):
-        state = self.user_states[chat_id]['confirmation_state']
+        if target_level not in self.user_states[chat_id]['confirmation_states']:
+            self.user_states[chat_id]['confirmation_states'][target_level] = {
+                'count': 0, 'values': [], 'target_level': target_level, 'direction': direction
+            }
+        state = self.user_states[chat_id]['confirmation_states'][target_level]
         state['count'] = 1
         state['values'] = [initial_value]
-        state['target_level'] = target_level
-        state['direction'] = direction
         logger.info(f"Starting confirmation for chat_id={chat_id}: {initial_value:.6f} Gwei, direction: {direction}, target: {target_level:.6f}")
 
         for i in range(CONFIRMATION_COUNT - 1):
@@ -263,6 +269,7 @@ class BotState:
                 logger.error(f"Failed to get gas on attempt {i + 2} for chat_id={chat_id}")
                 state['count'] = 0
                 state['values'] = []
+                del self.user_states[chat_id]['confirmation_states'][target_level]
                 return
             state['count'] += 1
             state['values'].append(current_slow)
@@ -276,6 +283,7 @@ class BotState:
             is_confirmed = True
 
         if is_confirmed and target_level not in self.user_states[chat_id]['notified_levels']:
+            logger.info(f"Confirmation successful for chat_id={chat_id}, target={target_level:.6f}, values={values}")
             last_measured = self.user_states[chat_id]['last_measured_gas']
             notification_message = (
                 f"<pre>{'🟩' if direction == 'down' else '🟥'} ◆ ГАЗ {'УМЕНЬШИЛСЯ' if direction == 'down' else 'УВЕЛИЧИЛСЯ'} до: {values[-1]:.6f} Gwei\n"
@@ -286,11 +294,12 @@ class BotState:
             self.user_states[chat_id]['active_level'] = target_level
             self.user_states[chat_id]['prev_level'] = last_measured
             logger.info(f"Level {target_level:.6f} confirmed for chat_id={chat_id}, notified")
+        else:
+            logger.info(f"Confirmation failed or already notified for chat_id={chat_id}, target={target_level:.6f}, is_confirmed={is_confirmed}, notified={target_level in self.user_states[chat_id]['notified_levels']}")
 
         state['count'] = 0
         state['values'] = []
-        state['target_level'] = None
-        state['direction'] = None
+        del self.user_states[chat_id]['confirmation_states'][target_level]
 
     async def get_manta_gas(self, chat_id, force_base_message=False):
         try:
@@ -300,7 +309,6 @@ class BotState:
                 return
 
             logger.info(f"Gas for chat_id={chat_id}: Slow={current_slow:.6f}")
-            # Подсчет ведущих нулей после десятичной точки
             gas_str = f"{current_slow:.6f}"
             decimal_part = gas_str.split('.')[1] if '.' in gas_str else ''
             leading_zeros = 0
@@ -315,7 +323,6 @@ class BotState:
             self.user_states[chat_id]['last_measured_gas'] = current_slow
             prev_level = self.user_states[chat_id]['prev_level']
             levels = self.user_states[chat_id]['current_levels']
-            confirmation_state = self.user_states[chat_id]['confirmation_state']
 
             if not levels:
                 await self.load_or_set_default_levels(chat_id)
@@ -332,15 +339,15 @@ class BotState:
             if prev_level is None or force_base_message:
                 await self.update_message(chat_id, base_message, create_main_keyboard(chat_id))
                 self.user_states[chat_id]['prev_level'] = current_slow
-            elif confirmation_state['count'] == 0:
+            else:
                 sorted_levels = sorted(levels)
-                for level in sorted_levels:
-                    if prev_level < level <= current_slow:
-                        logger.info(f"Detected upward crossing for chat_id={chat_id}: {level:.6f}")
-                        asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', level))
-                    elif prev_level > level >= current_slow:
-                        logger.info(f"Detected downward crossing for chat_id={chat_id}: {level:.6f}")
-                        asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', level))
+                closest_level = min(sorted_levels, key=lambda x: abs(x - current_slow))
+                if prev_level < closest_level <= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
+                    logger.info(f"Detected upward crossing for chat_id={chat_id}: {closest_level:.6f}")
+                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', closest_level))
+                elif prev_level > closest_level >= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
+                    logger.info(f"Detected downward crossing for chat_id={chat_id}: {closest_level:.6f}")
+                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', closest_level))
 
             self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
 
@@ -540,7 +547,7 @@ class BotState:
                 await self.update_message(chat_id, "⚠️ Не удалось получить данные от CoinGecko.", create_main_keyboard(chat_id))
                 return
 
-            message = (
+            insurance = (
                 f"<pre>"
                 f"🦎 Данные с CoinGecko:\n"
                 f"◆ Сравнение L2 токенов (24 часа):\n"
@@ -734,6 +741,7 @@ async def handle_main_button(message: types.Message):
         state.pending_commands[chat_id] = {'step': 'range_selection'}
         await state.update_message(chat_id, "Выберите действие для уровней уведомлений:", create_levels_menu_keyboard())
     elif text == "Уведомления":
+        await state.reset_notified_levels(chat_id)  # Сбрасываем notified_levels
         current_levels = state.user_states[chat_id]['current_levels']
         logger.debug(f"Notification levels for chat_id={chat_id}: {current_levels}")
         if current_levels:
@@ -882,16 +890,14 @@ async def process_value(message: types.Message):
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
 async def monitor_gas_callback(gas_value):
-    # Пропускаем уведомление при первом запуске
     if state.is_first_run:
         for user_id, _ in ALLOWED_USERS:
-            state.user_states[user_id]['last_measured_gas'] = gas_value  # Сохраняем начальное значение газа
-            state.user_states[user_id]['prev_level'] = gas_value  # Устанавливаем prev_level
+            state.user_states[user_id]['last_measured_gas'] = gas_value
+            state.user_states[user_id]['prev_level'] = gas_value
             logger.info(f"First run: Set initial gas value for user_id={user_id}: {gas_value:.6f}")
-        state.is_first_run = False  # После первого запуска устанавливаем флаг в False
+        state.is_first_run = False
         return
 
-    # Обычная логика мониторинга газа для последующих вызовов
     for user_id, _ in ALLOWED_USERS:
         try:
             await asyncio.sleep(1)
@@ -907,7 +913,6 @@ async def main():
         state.init_user_stats(user_id)
         await state.load_user_stats(user_id)
 
-    # Добавляем HTTP-сервер для Render
     app = web.Application()
     async def health_check(request):
         return web.Response(text="OK")
@@ -918,7 +923,6 @@ async def main():
     await site.start()
     logger.info("HTTP server started on port 8000")
 
-    # Задержка для завершения старых сессий
     await asyncio.sleep(5)
 
     tasks = [
