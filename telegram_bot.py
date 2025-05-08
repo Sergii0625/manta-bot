@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime
 import aiohttp
+from aiohttp import web  # Добавлен импорт
 from monitoring_scanner import Scanner
 import asyncpg
 
@@ -547,7 +548,7 @@ class BotState:
                 await self.update_message(chat_id, "⚠️ Не удалось получить данные от CoinGecko.", create_main_keyboard(chat_id))
                 return
 
-            insurance = (
+            message = (
                 f"<pre>"
                 f"🦎 Данные с CoinGecko:\n"
                 f"◆ Сравнение L2 токенов (24 часа):\n"
