@@ -10,7 +10,7 @@ import aiohttp
 from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
-import pytz  # Добавлен импорт для работы с киевским временем
+import pytz
 
 # Настройка логирования
 logging.basicConfig(
@@ -34,7 +34,7 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-RESTART_TIMES = ["21:00"]  # Время перезагрузки в UTC (21:00 UTC = 00:00 EEST)
+RESTART_TIMES = ["21:00"]
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -148,7 +148,7 @@ def is_silent_hour(user_id, now_kyiv):
     now_time = now_kyiv.time()
     if start_time <= end_time:
         return start_time <= now_time <= end_time
-    else:  # Переход через полночь
+    else:
         return now_time >= start_time or now_time <= end_time
 
 class BotState:
@@ -178,7 +178,7 @@ class BotState:
                 'active_level': None,
                 'confirmation_states': {},
                 'notified_levels': set(),
-                'silent_hours': (None, None)  # Добавлено для хранения тихих часов
+                'silent_hours': (None, None)
             }
             await self.load_or_set_default_levels(user_id)
             start_time, end_time = await load_silent_hours(user_id)
@@ -192,7 +192,7 @@ class BotState:
         default_stats = {
             "Проверить газ": 0, "Manta Price": 0, "Сравнение L2": 0,
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
-            "Тихие часы": 0  # Добавлена статистика для новой кнопки
+            "Тихие часы": 0
         }
         if today not in self.user_stats[user_id]:
             self.user_stats[user_id][today] = default_stats.copy()
@@ -743,13 +743,13 @@ class BotState:
 
 def create_main_keyboard(chat_id):
     keyboard = [
-        [types.KeyboardButton(text="Проверить газ"), types.KeyboardButton(text="Страх и Жадность")],
+        [types.KeyboardButton(text="Тихие часы"), types.KeyboardButton(text="Страх и Жадность")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")],
-        [types.KeyboardButton(text="Тихие часы")]  # Добавлена новая кнопка
+        [types.KeyboardButton(text="Проверить газ")]
     ]
     if chat_id == ADMIN_ID:
-        keyboard.append([types.KeyboardButton(text="Админ")])
+        keyboard[-1].append(types.KeyboardButton(text="Админ"))
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def create_silent_hours_keyboard():
@@ -1030,7 +1030,6 @@ async def schedule_restart():
 
         if current_day != last_restart_day:
             for restart_time in RESTART_TIMES:
-                # Конвертируем UTC время перезагрузки в киевское
                 restart_time_utc = (datetime.strptime(restart_time, "%H:%M") - kyiv_tz.utcoffset(now)).strftime("%H:%M")
                 if current_time == restart_time:
                     logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
@@ -1059,7 +1058,7 @@ async def schedule_restart():
                     except Exception as e:
                         logger.error(f"Ошибка при перезагрузке: {str(e)}")
 
-        await asyncio.sleep(10)  # Проверка каждые 10 секунд для точности
+        await asyncio.sleep(10)
 
 async def main():
     logger.info("Starting bot initialization")
