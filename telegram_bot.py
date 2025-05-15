@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime
 import aiohttp
-from aiohttp import web  # Добавлен импорт
+from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 
@@ -33,6 +33,8 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
+RESTART_TIMES = ["00:00"]  # Времена перезагрузки (можно изменить "00:00", "13:45")
+
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -49,6 +51,7 @@ async def init_db():
     """)
     return conn
 
+
 async def save_levels(user_id, levels):
     conn = await init_db()
     levels_str = json.dumps([str(level) for level in levels])
@@ -63,6 +66,7 @@ async def save_levels(user_id, levels):
     await conn.close()
     logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
 
+
 async def load_levels(user_id):
     conn = await init_db()
     result = await conn.fetchrow(
@@ -72,7 +76,7 @@ async def load_levels(user_id):
     await conn.close()
     if result and result['levels']:
         levels = json.loads(result['levels'])
-        if not levels:  # Проверяем, пустой ли список
+        if not levels:
             logger.debug(f"Empty levels list in DB for user_id={user_id}")
             return None
         loaded_levels = [Decimal(level) for level in levels]
@@ -80,6 +84,7 @@ async def load_levels(user_id):
         return loaded_levels
     logger.debug(f"No levels found in DB for user_id={user_id}")
     return None
+
 
 async def save_stats(user_id, stats):
     conn = await init_db()
@@ -95,6 +100,7 @@ async def save_stats(user_id, stats):
     await conn.close()
     logger.debug(f"Saved stats for user_id={user_id}")
 
+
 async def load_stats(user_id):
     conn = await init_db()
     result = await conn.fetchrow(
@@ -107,6 +113,7 @@ async def load_stats(user_id):
         return json.loads(result['stats'])
     logger.debug(f"No stats found for user_id={user_id}")
     return None
+
 
 class BotState:
     def __init__(self, scanner):
@@ -133,7 +140,7 @@ class BotState:
                 'last_measured_gas': None,
                 'current_levels': [],
                 'active_level': None,
-                'confirmation_states': {},  # Изменено: словарь для хранения состояний по уровням
+                'confirmation_states': {},
                 'notified_levels': set()
             }
             await self.load_or_set_default_levels(user_id)
@@ -669,6 +676,7 @@ class BotState:
             message = "<b>Статистика использования бота за сегодня:</b>\n\nСегодня никто из пользователей (кроме админа) не использовал бота."
         await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
+
 def create_main_keyboard(chat_id):
     keyboard = [
         [types.KeyboardButton(text="Проверить газ"), types.KeyboardButton(text="Страх и Жадность")],
@@ -679,6 +687,7 @@ def create_main_keyboard(chat_id):
         keyboard.append([types.KeyboardButton(text="Админ")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+
 def create_levels_menu_keyboard():
     keyboard = [
         [types.KeyboardButton(text="0.00001–0.01")],
@@ -686,6 +695,7 @@ def create_levels_menu_keyboard():
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
 
 def create_level_input_keyboard():
     keyboard = [
@@ -695,13 +705,16 @@ def create_level_input_keyboard():
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+
 def create_delete_levels_keyboard(levels):
     keyboard = [[types.KeyboardButton(text=f"Удалить {level:.5f} Gwei")] for level in levels]
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+
 scanner = Scanner()
 state = BotState(scanner)
+
 
 @state.dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -714,6 +727,7 @@ async def start_command(message: types.Message):
         await message.delete()
     except Exception as e:
         logger.error(f"Failed to delete start command message_id={message.message_id}: {e}")
+
 
 @state.dp.message(lambda message: message.text in ["Проверить газ", "Manta Price", "Сравнение L2", "Страх и Жадность", "Задать уровни", "Уведомления", "Админ"])
 async def handle_main_button(message: types.Message):
@@ -742,7 +756,7 @@ async def handle_main_button(message: types.Message):
         state.pending_commands[chat_id] = {'step': 'range_selection'}
         await state.update_message(chat_id, "Выберите действие для уровней уведомлений:", create_levels_menu_keyboard())
     elif text == "Уведомления":
-        await state.reset_notified_levels(chat_id)  # Сбрасываем notified_levels
+        await state.reset_notified_levels(chat_id)
         current_levels = state.user_states[chat_id]['current_levels']
         logger.debug(f"Notification levels for chat_id={chat_id}: {current_levels}")
         if current_levels:
@@ -758,6 +772,7 @@ async def handle_main_button(message: types.Message):
         await message.delete()
     except Exception as e:
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
+
 
 @state.dp.message()
 async def process_value(message: types.Message):
@@ -890,6 +905,7 @@ async def process_value(message: types.Message):
     except Exception as e:
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
+
 async def monitor_gas_callback(gas_value):
     if state.is_first_run:
         for user_id, _ in ALLOWED_USERS:
@@ -906,6 +922,63 @@ async def monitor_gas_callback(gas_value):
         except Exception as e:
             logger.error(f"Unexpected error for user {user_id}: {str(e)}")
 
+
+async def schedule_restart():
+    global scanner, state
+    last_restart_day = None
+    while True:
+        now = datetime.now()
+        current_time = now.strftime("%H:%M")
+        current_day = now.date()
+
+        if current_day != last_restart_day:  # Проверяем новый день
+            for restart_time in RESTART_TIMES:
+                if current_time == restart_time:
+                    logger.info(f"Запуск перезагрузки бота в {restart_time}")
+                    try:
+                        # Сохранение всех данных
+                        for user_id, _ in ALLOWED_USERS:
+                            await state.save_user_stats(user_id)
+                            await state.save_levels(user_id, state.user_states[user_id]['current_levels'])
+
+                        # Закрытие текущих соединений
+                        await scanner.close()
+
+                        # Очистка кэшей
+                        state.l2_data_cache = None
+                        state.l2_data_time = None
+                        state.fear_greed_cache = None
+                        state.fear_greed_time = None
+                        logger.info("Кэши очищены")
+
+                        # Пересоздание объектов
+                        scanner = Scanner()
+                        state = BotState(scanner)
+                        logger.info("Новые экземпляры Scanner и BotState созданы")
+
+                        # Восстановление пользовательских данных
+                        for user_id, _ in ALLOWED_USERS:
+                            await state.init_user_state(user_id)
+                            state.init_user_stats(user_id)
+                            await state.load_user_stats(user_id)
+                        logger.info("Пользовательские данные восстановлены")
+
+                        # Установка меню
+                        await state.set_menu_button()
+
+                        # Установка флага первого запуска
+                        state.is_first_run = True
+
+                        # Перезапуск задач будет выполнен в main
+                        logger.info(f"Перезагрузка завершена в {restart_time}")
+                        last_restart_day = current_day
+                    except Exception as e:
+                        logger.error(f"Ошибка при перезагрузке: {str(e)}")
+                        # Продолжаем цикл, чтобы не прервать планировщик
+
+        await asyncio.sleep(60)  # Проверка каждую минуту
+
+
 async def main():
     logger.info("Starting bot initialization")
     await state.set_menu_button()
@@ -915,8 +988,10 @@ async def main():
         await state.load_user_stats(user_id)
 
     app = web.Application()
+
     async def health_check(request):
         return web.Response(text="OK")
+
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -924,17 +999,20 @@ async def main():
     await site.start()
     logger.info("HTTP server started on port 8000")
 
+    await state.set_menu_button()
     await asyncio.sleep(5)
 
     tasks = [
         state.dp.start_polling(state.bot),
-        scanner.monitor_gas(INTERVAL, monitor_gas_callback)
+        scanner.monitor_gas(INTERVAL, monitor_gas_callback),
+        schedule_restart()
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             logger.error(f"Task {i} failed with exception: {str(result)}")
     await runner.cleanup()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
