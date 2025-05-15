@@ -5,11 +5,12 @@ import json
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import Command
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, time
 import aiohttp
 from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
+import pytz  # Добавлен импорт для работы с киевским временем
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,8 +34,7 @@ ADMIN_ID = 501156257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
-RESTART_TIMES = ["21:10"]  # Времена перезагрузки (можно изменить "00:00", "13:45", время UTC ставить нужно на 3 часа меньше чем нужно)
-
+RESTART_TIMES = ["21:00"]  # Время перезагрузки в UTC (21:00 UTC = 00:00 EEST)
 
 # Функции для работы с PostgreSQL
 async def init_db():
@@ -48,9 +48,39 @@ async def init_db():
             user_id BIGINT PRIMARY KEY,
             stats TEXT
         );
+        CREATE TABLE IF NOT EXISTS silent_hours (
+            user_id BIGINT PRIMARY KEY,
+            start_time TIME,
+            end_time TIME
+        );
     """)
     return conn
 
+async def save_silent_hours(user_id, start_time, end_time):
+    conn = await init_db()
+    await conn.execute(
+        """
+        INSERT INTO silent_hours (user_id, start_time, end_time)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id) DO UPDATE SET start_time = $2, end_time = $3
+        """,
+        user_id, start_time, end_time
+    )
+    await conn.close()
+    logger.debug(f"Saved silent hours for user_id={user_id}: {start_time}-{end_time}")
+
+async def load_silent_hours(user_id):
+    conn = await init_db()
+    result = await conn.fetchrow(
+        "SELECT start_time, end_time FROM silent_hours WHERE user_id = $1",
+        user_id
+    )
+    await conn.close()
+    if result:
+        logger.debug(f"Loaded silent hours for user_id={user_id}: {result['start_time']}-{result['end_time']}")
+        return result['start_time'], result['end_time']
+    logger.debug(f"No silent hours found for user_id={user_id}")
+    return None, None
 
 async def save_levels(user_id, levels):
     conn = await init_db()
@@ -65,7 +95,6 @@ async def save_levels(user_id, levels):
     )
     await conn.close()
     logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
-
 
 async def load_levels(user_id):
     conn = await init_db()
@@ -85,7 +114,6 @@ async def load_levels(user_id):
     logger.debug(f"No levels found in DB for user_id={user_id}")
     return None
 
-
 async def save_stats(user_id, stats):
     conn = await init_db()
     stats_str = json.dumps(stats)
@@ -100,7 +128,6 @@ async def save_stats(user_id, stats):
     await conn.close()
     logger.debug(f"Saved stats for user_id={user_id}")
 
-
 async def load_stats(user_id):
     conn = await init_db()
     result = await conn.fetchrow(
@@ -114,6 +141,15 @@ async def load_stats(user_id):
     logger.debug(f"No stats found for user_id={user_id}")
     return None
 
+def is_silent_hour(user_id, now_kyiv):
+    start_time, end_time = state.user_states[user_id].get('silent_hours', (None, None))
+    if start_time is None or end_time is None:
+        return False
+    now_time = now_kyiv.time()
+    if start_time <= end_time:
+        return start_time <= now_time <= end_time
+    else:  # Переход через полночь
+        return now_time >= start_time or now_time <= end_time
 
 class BotState:
     def __init__(self, scanner):
@@ -141,18 +177,22 @@ class BotState:
                 'current_levels': [],
                 'active_level': None,
                 'confirmation_states': {},
-                'notified_levels': set()
+                'notified_levels': set(),
+                'silent_hours': (None, None)  # Добавлено для хранения тихих часов
             }
             await self.load_or_set_default_levels(user_id)
-            logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}")
+            start_time, end_time = await load_silent_hours(user_id)
+            self.user_states[user_id]['silent_hours'] = (start_time, end_time)
+            logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}, silent_hours={self.user_states[user_id]['silent_hours']}")
 
     def init_user_stats(self, user_id):
         if user_id not in self.user_stats:
             self.user_stats[user_id] = {}
-        today = datetime.now().date().isoformat()
+        today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
         default_stats = {
             "Проверить газ": 0, "Manta Price": 0, "Сравнение L2": 0,
-            "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0
+            "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
+            "Тихие часы": 0  # Добавлена статистика для новой кнопки
         }
         if today not in self.user_stats[user_id]:
             self.user_stats[user_id][today] = default_stats.copy()
@@ -261,6 +301,12 @@ class BotState:
         logger.info(f"Cleared notified levels for chat_id={chat_id}")
 
     async def confirm_level_crossing(self, chat_id, initial_value, direction, target_level):
+        kyiv_tz = pytz.timezone('Europe/Kyiv')
+        now_kyiv = datetime.now(kyiv_tz)
+        if is_silent_hour(chat_id, now_kyiv):
+            logger.info(f"Silent hours active for chat_id={chat_id}, skipping notification for level={target_level:.6f}")
+            return
+
         if target_level not in self.user_states[chat_id]['confirmation_states']:
             self.user_states[chat_id]['confirmation_states'][target_level] = {
                 'count': 0, 'values': [], 'target_level': target_level, 'direction': direction
@@ -348,20 +394,39 @@ class BotState:
                 await self.update_message(chat_id, base_message, create_main_keyboard(chat_id))
                 self.user_states[chat_id]['prev_level'] = current_slow
             else:
-                sorted_levels = sorted(levels)
-                closest_level = min(sorted_levels, key=lambda x: abs(x - current_slow))
-                if prev_level < closest_level <= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
-                    logger.info(f"Detected upward crossing for chat_id={chat_id}: {closest_level:.6f}")
-                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', closest_level))
-                elif prev_level > closest_level >= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
-                    logger.info(f"Detected downward crossing for chat_id={chat_id}: {closest_level:.6f}")
-                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', closest_level))
+                kyiv_tz = pytz.timezone('Europe/Kyiv')
+                now_kyiv = datetime.now(kyiv_tz)
+                if not is_silent_hour(chat_id, now_kyiv):
+                    sorted_levels = sorted(levels)
+                    closest_level = min(sorted_levels, key=lambda x: abs(x - current_slow))
+                    if prev_level < closest_level <= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
+                        logger.info(f"Detected upward crossing for chat_id={chat_id}: {closest_level:.6f}")
+                        asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', closest_level))
+                    elif prev_level > closest_level >= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
+                        logger.info(f"Detected downward crossing for chat_id={chat_id}: {closest_level:.6f}")
+                        asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', closest_level))
 
             self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
 
         except Exception as e:
             logger.error(f"Error for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
+
+    async def set_silent_hours(self, chat_id, time_range):
+        try:
+            start_str, end_str = time_range.split('-')
+            start_time = datetime.strptime(start_str, "%H:%M").time()
+            end_time = datetime.strptime(end_str, "%H:%M").time()
+            await save_silent_hours(chat_id, start_time, end_time)
+            self.user_states[chat_id]['silent_hours'] = (start_time, end_time)
+            logger.info(f"Set silent hours for chat_id={chat_id}: {start_time}-{end_time}")
+            return True, f"Тихие часы установлены: {start_str}-{end_str}"
+        except ValueError as e:
+            logger.error(f"Invalid time format for chat_id={chat_id}: {time_range}, error: {str(e)}")
+            return False, "Ошибка: введите время в формате ЧЧ:ММ-ЧЧ:ММ, например, 00:00-07:00"
+        except Exception as e:
+            logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
+            return False, f"Ошибка: {str(e)}"
 
     async def fetch_l2_data(self):
         l2_tokens = {
@@ -376,7 +441,7 @@ class BotState:
         }
         token_data = {}
 
-        current_time = datetime.now()
+        current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
         if self.l2_data_time and (current_time - self.l2_data_time).total_seconds() < self.l2_data_cooldown and self.l2_data_cache:
             return self.l2_data_cache
 
@@ -437,7 +502,7 @@ class BotState:
         return token_data
 
     async def fetch_fear_greed(self):
-        current_time = datetime.now()
+        current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
         if self.fear_greed_time and (current_time - self.fear_greed_time).total_seconds() < self.fear_greed_cooldown and self.fear_greed_cache:
             return self.fear_greed_cache
 
@@ -656,7 +721,7 @@ class BotState:
     async def get_admin_stats(self, chat_id):
         if chat_id != ADMIN_ID:
             return
-        today = datetime.now().date().isoformat()
+        today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
         message = "<b>Статистика использования бота за сегодня:</b>\n\n<pre>"
         has_activity = False
         for user_id, user_name in ALLOWED_USERS:
@@ -676,17 +741,23 @@ class BotState:
             message = "<b>Статистика использования бота за сегодня:</b>\n\nСегодня никто из пользователей (кроме админа) не использовал бота."
         await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
-
 def create_main_keyboard(chat_id):
     keyboard = [
         [types.KeyboardButton(text="Проверить газ"), types.KeyboardButton(text="Страх и Жадность")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
-        [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")]
+        [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")],
+        [types.KeyboardButton(text="Тихие часы")]  # Добавлена новая кнопка
     ]
     if chat_id == ADMIN_ID:
         keyboard.append([types.KeyboardButton(text="Админ")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
+def create_silent_hours_keyboard():
+    keyboard = [
+        [types.KeyboardButton(text="Отключить тихие часы")],
+        [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def create_levels_menu_keyboard():
     keyboard = [
@@ -696,7 +767,6 @@ def create_levels_menu_keyboard():
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-
 def create_level_input_keyboard():
     keyboard = [
         [types.KeyboardButton(text="Добавить еще уровень")],
@@ -705,16 +775,13 @@ def create_level_input_keyboard():
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-
 def create_delete_levels_keyboard(levels):
     keyboard = [[types.KeyboardButton(text=f"Удалить {level:.5f} Gwei")] for level in levels]
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-
 scanner = Scanner()
 state = BotState(scanner)
-
 
 @state.dp.message(Command("start"))
 async def start_command(message: types.Message):
@@ -728,8 +795,10 @@ async def start_command(message: types.Message):
     except Exception as e:
         logger.error(f"Failed to delete start command message_id={message.message_id}: {e}")
 
-
-@state.dp.message(lambda message: message.text in ["Проверить газ", "Manta Price", "Сравнение L2", "Страх и Жадность", "Задать уровни", "Уведомления", "Админ"])
+@state.dp.message(lambda message: message.text in [
+    "Проверить газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
+    "Задать уровни", "Уведомления", "Админ", "Тихие часы"
+])
 async def handle_main_button(message: types.Message):
     if not await state.check_access(message):
         return
@@ -737,11 +806,11 @@ async def handle_main_button(message: types.Message):
     text = message.text
     logger.debug(f"Button pressed: {text} by chat_id={chat_id}")
 
-    today = datetime.now().date().isoformat()
+    today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
     state.user_stats[chat_id][today][text] += 1
     await state.save_user_stats(chat_id)
 
-    if chat_id in state.pending_commands and text != "Задать уровни":
+    if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы"]:
         del state.pending_commands[chat_id]
 
     if text == "Проверить газ":
@@ -767,12 +836,20 @@ async def handle_main_button(message: types.Message):
             await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
     elif text == "Админ" and chat_id == ADMIN_ID:
         await state.get_admin_stats(chat_id)
+    elif text == "Тихие часы":
+        state.pending_commands[chat_id] = {'step': 'silent_hours_input'}
+        start_time, end_time = state.user_states[chat_id]['silent_hours']
+        current_silent = f"Текущие тихие часы: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}" if start_time and end_time else "Тихие часы не установлены."
+        await state.update_message(
+            chat_id,
+            f"{current_silent}\n\nУстановите время, пример: 00:00-07:00",
+            create_silent_hours_keyboard()
+        )
 
     try:
         await message.delete()
     except Exception as e:
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
-
 
 @state.dp.message()
 async def process_value(message: types.Message):
@@ -786,7 +863,28 @@ async def process_value(message: types.Message):
     else:
         state_data = state.pending_commands[chat_id]
 
-        if state_data['step'] == 'range_selection':
+        if state_data['step'] == 'silent_hours_input':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
+            elif text == "Отключить тихие часы":
+                await save_silent_hours(chat_id, None, None)
+                state.user_states[chat_id]['silent_hours'] = (None, None)
+                logger.info(f"Disabled silent hours for chat_id={chat_id}")
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Тихие часы отключены.", create_main_keyboard(chat_id))
+            else:
+                success, response = await state.set_silent_hours(chat_id, text)
+                if success:
+                    del state.pending_commands[chat_id]
+                    await state.update_message(chat_id, response, create_main_keyboard(chat_id))
+                else:
+                    await state.update_message(chat_id, response, create_silent_hours_keyboard())
+
+        elif state_data['step'] == 'range_selection':
             if text == "Отмена":
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
@@ -905,7 +1003,6 @@ async def process_value(message: types.Message):
     except Exception as e:
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
-
 async def monitor_gas_callback(gas_value):
     if state.is_first_run:
         for user_id, _ in ALLOWED_USERS:
@@ -922,62 +1019,47 @@ async def monitor_gas_callback(gas_value):
         except Exception as e:
             logger.error(f"Unexpected error for user {user_id}: {str(e)}")
 
-
 async def schedule_restart():
     global scanner, state
     last_restart_day = None
+    kyiv_tz = pytz.timezone('Europe/Kyiv')
     while True:
-        now = datetime.now()
+        now = datetime.now(kyiv_tz)
         current_time = now.strftime("%H:%M")
         current_day = now.date()
 
-        if current_day != last_restart_day:  # Проверяем новый день
+        if current_day != last_restart_day:
             for restart_time in RESTART_TIMES:
+                # Конвертируем UTC время перезагрузки в киевское
+                restart_time_utc = (datetime.strptime(restart_time, "%H:%M") - kyiv_tz.utcoffset(now)).strftime("%H:%M")
                 if current_time == restart_time:
-                    logger.info(f"Запуск перезагрузки бота в {restart_time}")
+                    logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
                     try:
-                        # Сохранение всех данных
                         for user_id, _ in ALLOWED_USERS:
                             await state.save_user_stats(user_id)
                             await state.save_levels(user_id, state.user_states[user_id]['current_levels'])
-
-                        # Закрытие текущих соединений
                         await scanner.close()
-
-                        # Очистка кэшей
                         state.l2_data_cache = None
                         state.l2_data_time = None
                         state.fear_greed_cache = None
                         state.fear_greed_time = None
                         logger.info("Кэши очищены")
-
-                        # Пересоздание объектов
                         scanner = Scanner()
                         state = BotState(scanner)
                         logger.info("Новые экземпляры Scanner и BotState созданы")
-
-                        # Восстановление пользовательских данных
                         for user_id, _ in ALLOWED_USERS:
                             await state.init_user_state(user_id)
                             state.init_user_stats(user_id)
                             await state.load_user_stats(user_id)
                         logger.info("Пользовательские данные восстановлены")
-
-                        # Установка меню
                         await state.set_menu_button()
-
-                        # Установка флага первого запуска
                         state.is_first_run = True
-
-                        # Перезапуск задач будет выполнен в main
-                        logger.info(f"Перезагрузка завершена в {restart_time}")
+                        logger.info(f"Перезагрузка завершена в {restart_time} по киевскому времени")
                         last_restart_day = current_day
                     except Exception as e:
                         logger.error(f"Ошибка при перезагрузке: {str(e)}")
-                        # Продолжаем цикл, чтобы не прервать планировщик
 
-        await asyncio.sleep(60)  # Проверка каждую минуту
-
+        await asyncio.sleep(10)  # Проверка каждые 10 секунд для точности
 
 async def main():
     logger.info("Starting bot initialization")
@@ -988,10 +1070,8 @@ async def main():
         await state.load_user_stats(user_id)
 
     app = web.Application()
-
     async def health_check(request):
         return web.Response(text="OK")
-
     app.router.add_get('/', health_check)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -1012,7 +1092,6 @@ async def main():
         if isinstance(result, Exception):
             logger.error(f"Task {i} failed with exception: {str(result)}")
     await runner.cleanup()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
