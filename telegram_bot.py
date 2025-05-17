@@ -190,7 +190,7 @@ class BotState:
             self.user_stats[user_id] = {}
         today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
         default_stats = {
-            "Gas Check": 0, "Manta Price": 0, "Сравнение L2": 0,
+            "Газ": 0, "Manta Price": 0, "Сравнение L2": 0,
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
             "Тихие часы": 0
         }
@@ -744,12 +744,12 @@ class BotState:
 def create_main_keyboard(chat_id):
     if chat_id == ADMIN_ID:
         keyboard = [
-            [types.KeyboardButton(text="Gas Check")],
-            [types.KeyboardButton(text="Admin"), types.KeyboardButton(text="Menu")]
+            [types.KeyboardButton(text="Газ")],
+            [types.KeyboardButton(text="Админ"), types.KeyboardButton(text="Меню")]
         ]
     else:
         keyboard = [
-            [types.KeyboardButton(text="Gas Check"), types.KeyboardButton(text="Menu")]
+            [types.KeyboardButton(text="Газ"), types.KeyboardButton(text="Меню")]
         ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
@@ -806,8 +806,8 @@ async def start_command(message: types.Message):
         logger.error(f"Failed to delete start command message_id={message.message_id}: {e}")
 
 @state.dp.message(lambda message: message.text in [
-    "Gas Check", "Manta Price", "Сравнение L2", "Страх и Жадность",
-    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Menu", "Назад"
+    "Газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
+    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Меню", "Назад"
 ])
 async def handle_main_button(message: types.Message):
     if not await state.check_access(message):
@@ -817,14 +817,14 @@ async def handle_main_button(message: types.Message):
     logger.debug(f"Button pressed: {text} by chat_id={chat_id}")
 
     today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
-    if text != "Menu" and text != "Назад":
+    if text not in ["Меню", "Назад"]:
         state.user_stats[chat_id][today][text] += 1
         await state.save_user_stats(chat_id)
 
     if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы"]:
         del state.pending_commands[chat_id]
 
-    if text == "Gas Check":
+    if text == "Газ":
         await state.get_manta_gas(chat_id, force_base_message=True)
     elif text == "Manta Price":
         await state.get_manta_price(chat_id)
@@ -845,8 +845,11 @@ async def handle_main_button(message: types.Message):
             await state.update_message(chat_id, formatted_message, create_main_keyboard(chat_id))
         else:
             await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
-    elif text == "Админ" and chat_id == ADMIN_ID:
-        await state.get_admin_stats(chat_id)
+    elif text == "Админ":
+        if chat_id == ADMIN_ID:
+            await state.get_admin_stats(chat_id)
+        else:
+            await state.update_message(chat_id, "Доступ только для админа.", create_main_keyboard(chat_id))
     elif text == "Тихие часы":
         state.pending_commands[chat_id] = {'step': 'silent_hours_input'}
         start_time, end_time = state.user_states[chat_id]['silent_hours']
@@ -856,7 +859,7 @@ async def handle_main_button(message: types.Message):
             f"{current_silent}\n\nУстановите время, пример: 00:00-07:00",
             create_silent_hours_keyboard()
         )
-    elif text == "Menu":
+    elif text == "Меню":
         await state.update_message(chat_id, "Выберите действие:", create_menu_keyboard())
     elif text == "Назад":
         await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
