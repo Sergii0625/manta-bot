@@ -161,15 +161,14 @@ class BotState:
         self.message_ids = {}
         self.l2_data_cache = None
         self.l2_data_time = None
-        self.l2_data_cooldown = 300
         self.fear_greed_cache = None
         self.fear_greed_time = None
         self.fear_greed_cooldown = 300
         self.converter_cache = None
         self.converter_cache_time = None
-        self.converter_cooldown = 300
         self.user_stats = {}
         self.is_first_run = True
+        self.price_fetch_interval = 300  # Интервал фонового обновления цен (5 минут)
         logger.info("BotState initialized")
 
     async def init_user_state(self, user_id):
@@ -431,6 +430,19 @@ class BotState:
             logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
             return False, f"Ошибка: {str(e)}"
 
+    async def background_price_fetcher(self):
+        while True:
+            try:
+                logger.debug("Running background price fetch")
+                # Обновляем кэш для конвертера и газ-калькулятора
+                await self.fetch_converter_data()
+                # Обновляем кэш для L2 токенов и Manta Price
+                await self.fetch_l2_data()
+                logger.debug("Background price fetch completed")
+            except Exception as e:
+                logger.error(f"Error in background price fetch: {str(e)}")
+            await asyncio.sleep(self.price_fetch_interval)
+
     async def fetch_converter_data(self):
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
@@ -446,7 +458,7 @@ class BotState:
                 async with session.get(url, params=params) as response:
                     if response.status != 200:
                         logger.warning(f"CoinGecko API error for converter: {response.status}")
-                        return None
+                        return self.converter_cache  # Возвращаем текущий кэш при ошибке
                     data = await response.json()
                     prices = {coin["id"]: coin["current_price"] for coin in data}
                     self.converter_cache = prices
@@ -455,29 +467,23 @@ class BotState:
                     return prices
         except Exception as e:
             logger.error(f"Error fetching converter data: {str(e)}")
-            return None
+            return self.converter_cache  # Возвращаем текущий кэш при ошибке
 
     async def convert_manta(self, chat_id, amount):
         try:
-            # Сначала пытаемся получить актуальные данные
-            prices = await self.fetch_converter_data()
-            # Если не удалось получить новые данные, используем кэш
-            if prices is None and self.converter_cache:
-                prices = self.converter_cache
-                logger.debug(f"Using cached converter data for chat_id={chat_id}")
-            # Если кэш тоже пуст, возвращаем None
-            if prices is None:
-                logger.error(f"No converter data available for chat_id={chat_id}")
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_menu_keyboard())
-                return None
+            prices = self.converter_cache
+            # Если кэш пуст, используем резервные цены
+            if not prices:
+                logger.warning(f"No converter data in cache for chat_id={chat_id}, using fallback prices")
+                prices = {
+                    "manta-network": 1.5,  # Резервная цена MANTA
+                    "ethereum": 2500,     # Резервная цена ETH
+                    "bitcoin": 65000      # Резервная цена BTC
+                }
 
-            manta_usd = prices.get("manta-network", 0)
-            eth_usd = prices.get("ethereum", 0)
-            btc_usd = prices.get("bitcoin", 0)
-            if not all([manta_usd, eth_usd, btc_usd]):
-                logger.error(f"Missing price data for converter: manta={manta_usd}, eth={eth_usd}, btc={btc_usd}")
-                await self.update_message(chat_id, "⚠️ Неполные данные о ценах.", create_menu_keyboard())
-                return None
+            manta_usd = prices.get("manta-network", 1.5)
+            eth_usd = prices.get("ethereum", 2500)
+            btc_usd = prices.get("bitcoin", 65000)
 
             result = {
                 "USDT": amount * manta_usd,
@@ -502,40 +508,11 @@ class BotState:
 
     async def calculate_gas_cost(self, chat_id, gas_price, tx_count):
         try:
-            # Сначала пытаемся получить актуальную цену ETH
-            url = "https://api.coingecko.com/api/v3/coins/markets"
-            params = {
-                "vs_currency": "usd",
-                "ids": "ethereum",
-                "order": "market_cap_desc",
-                "per_page": 1,
-                "page": 1,
-                "sparkline": "false"
-            }
-            prices = None
-            try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params) as response:
-                        if response.status != 200:
-                            logger.warning(f"CoinGecko API error for gas calculator: {response.status}")
-                        else:
-                            data = await response.json()
-                            prices = {coin["id"]: coin["current_price"] for coin in data}
-                            self.converter_cache = prices
-                            self.converter_cache_time = datetime.now(pytz.timezone('Europe/Kyiv'))
-                            logger.debug("Gas calculator data fetched and cached")
-            except Exception as e:
-                logger.error(f"Error fetching gas calculator data: {str(e)}")
-
-            # Если не удалось получить новые данные, используем кэш
-            if prices is None and self.converter_cache:
-                prices = self.converter_cache
-                logger.debug(f"Using cached gas calculator data for chat_id={chat_id}")
-
-            # Если кэш тоже пуст, используем резервную цену
-            if prices is None:
+            prices = self.converter_cache
+            # Если кэш пуст, используем резервную цену
+            if not prices:
+                logger.warning(f"No price data in cache for gas calculator for chat_id={chat_id}, using fallback price")
                 eth_usd = 2500  # Резервная цена
-                logger.warning(f"No price data available for gas calculator, using fallback price: {eth_usd}")
             else:
                 eth_usd = prices.get("ethereum", 2500)
 
@@ -570,13 +547,6 @@ class BotState:
         }
         token_data = {}
 
-        # Проверяем, можно ли использовать кэш
-        current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
-        if self.l2_data_time and (current_time - self.l2_data_time).total_seconds() < self.l2_data_cooldown and self.l2_data_cache:
-            logger.debug("Returning cached L2 data")
-            return self.l2_data_cache
-
-        # Пытаемся получить актуальные данные
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
@@ -593,11 +563,7 @@ class BotState:
                 async with session.get(url, params=params) as response:
                     if response.status != 200:
                         logger.warning(f"CoinGecko API error: {response.status}")
-                        # Если есть кэш, возвращаем его
-                        if self.l2_data_cache:
-                            logger.debug("API failed, returning cached L2 data")
-                            return self.l2_data_cache
-                        return None
+                        return self.l2_data_cache or token_data
                     data = await response.json()
 
                     token_map = {coin["id"]: coin for coin in data}
@@ -635,16 +601,12 @@ class BotState:
                             }
 
                     self.l2_data_cache = token_data
-                    self.l2_data_time = current_time
+                    self.l2_data_time = datetime.now(pytz.timezone('Europe/Kyiv'))
                     logger.debug("L2 data fetched and cached")
                     return token_data
         except Exception as e:
             logger.error(f"Error fetching L2 data: {str(e)}")
-            # Если есть кэш, возвращаем его
-            if self.l2_data_cache:
-                logger.debug("API failed, returning cached L2 data")
-                return self.l2_data_cache
-            return None
+            return self.l2_data_cache or token_data
 
     async def fetch_fear_greed(self):
         current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
@@ -713,9 +675,10 @@ class BotState:
 
     async def get_manta_price(self, chat_id):
         try:
-            token_data = await self.fetch_l2_data()
+            token_data = self.l2_data_cache
             if not token_data:
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_main_keyboard(chat_id))
+                logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
                 return
 
             manta_data = token_data["MANTA"]
@@ -760,9 +723,10 @@ class BotState:
 
     async def get_l2_comparison(self, chat_id):
         try:
-            token_data = await self.fetch_l2_data()
+            token_data = self.l2_data_cache
             if not token_data:
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_main_keyboard(chat_id))
+                logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
                 return
 
             message = (
@@ -1330,7 +1294,8 @@ async def main():
     tasks = [
         state.dp.start_polling(state.bot),
         scanner.monitor_gas(INTERVAL, monitor_gas_callback),
-        schedule_restart()
+        schedule_restart(),
+        state.background_price_fetcher()  # Фоновая задача для обновления цен
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for i, result in enumerate(results):
