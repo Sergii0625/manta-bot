@@ -165,6 +165,9 @@ class BotState:
         self.fear_greed_cache = None
         self.fear_greed_time = None
         self.fear_greed_cooldown = 300
+        self.converter_cache = None
+        self.converter_cache_time = None
+        self.converter_cooldown = 300
         self.user_stats = {}
         self.is_first_run = True
         logger.info("BotState initialized")
@@ -192,7 +195,7 @@ class BotState:
         default_stats = {
             "Газ": 0, "Manta Price": 0, "Сравнение L2": 0,
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
-            "Тихие часы": 0
+            "Тихие часы": 0, "Конвертер": 0
         }
         if today not in self.user_stats[user_id]:
             self.user_stats[user_id][today] = default_stats.copy()
@@ -427,6 +430,58 @@ class BotState:
         except Exception as e:
             logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
             return False, f"Ошибка: {str(e)}"
+
+    async def convert_manta(self, chat_id, amount):
+        try:
+            current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
+            if self.converter_cache_time and (current_time - self.converter_cache_time).total_seconds() < self.converter_cooldown and self.converter_cache:
+                prices = self.converter_cache
+            else:
+                url = "https://api.coingecko.com/api/v3/coins/markets"
+                params = {
+                    "vs_currency": "usd",
+                    "ids": "manta-network,ethereum,bitcoin",
+                    "order": "market_cap_desc",
+                    "per_page": 3,
+                    "page": 1,
+                    "sparkline": "false"
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params) as response:
+                        if response.status != 200:
+                            logger.error(f"CoinGecko API error for converter: {response.status}")
+                            return None
+                        data = await response.json()
+                        prices = {coin["id"]: coin["current_price"] for coin in data}
+                        self.converter_cache = prices
+                        self.converter_cache_time = current_time
+
+            manta_usd = prices.get("manta-network", 0)
+            eth_usd = prices.get("ethereum", 0)
+            btc_usd = prices.get("bitcoin", 0)
+            if not all([manta_usd, eth_usd, btc_usd]):
+                logger.error(f"Missing price data for converter: manta={manta_usd}, eth={eth_usd}, btc={btc_usd}")
+                return None
+
+            result = {
+                "USDT": amount * manta_usd,
+                "ETH": amount * manta_usd / eth_usd if eth_usd else 0,
+                "BTC": amount * manta_usd / btc_usd if btc_usd else 0
+            }
+            message = (
+                f"<pre>"
+                f"Конвертация {amount:.2f} MANTA:\n"
+                f"◆ USDT: {result['USDT']:.2f}\n"
+                f"◆ ETH: {result['ETH']:.6f}\n"
+                f"◆ BTC: {result['BTC']:.8f}"
+                f"</pre>"
+            )
+            await self.update_message(chat_id, message, create_menu_keyboard())
+            return True
+
+        except Exception as e:
+            logger.error(f"Error in convert_manta for chat_id={chat_id}: {str(e)}")
+            return None
 
     async def fetch_l2_data(self):
         l2_tokens = {
@@ -755,6 +810,7 @@ def create_main_keyboard(chat_id):
 
 def create_menu_keyboard():
     keyboard = [
+        [types.KeyboardButton(text="Конвертер")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Страх и Жадность"), types.KeyboardButton(text="Тихие часы")],
         [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")],
@@ -765,6 +821,12 @@ def create_menu_keyboard():
 def create_silent_hours_keyboard():
     keyboard = [
         [types.KeyboardButton(text="Отключить тихие часы")],
+        [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def create_converter_keyboard():
+    keyboard = [
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -807,7 +869,7 @@ async def start_command(message: types.Message):
 
 @state.dp.message(lambda message: message.text in [
     "Газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
-    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Меню", "Назад"
+    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Меню", "Назад", "Конвертер"
 ])
 async def handle_main_button(message: types.Message):
     if not await state.check_access(message):
@@ -821,7 +883,7 @@ async def handle_main_button(message: types.Message):
         state.user_stats[chat_id][today][text] += 1
         await state.save_user_stats(chat_id)
 
-    if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы"]:
+    if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы", "Конвертер"]:
         del state.pending_commands[chat_id]
 
     if text == "Газ":
@@ -859,6 +921,9 @@ async def handle_main_button(message: types.Message):
             f"{current_silent}\n\nУстановите время, пример: 00:00-07:00",
             create_silent_hours_keyboard()
         )
+    elif text == "Конвертер":
+        state.pending_commands[chat_id] = {'step': 'converter_input'}
+        await state.update_message(chat_id, "Введите количество MANTA для конвертации:", create_converter_keyboard())
     elif text == "Меню":
         await state.update_message(chat_id, "Выберите действие:", create_menu_keyboard())
     elif text == "Назад":
@@ -881,7 +946,27 @@ async def process_value(message: types.Message):
     else:
         state_data = state.pending_commands[chat_id]
 
-        if state_data['step'] == 'silent_hours_input':
+        if state_data['step'] == 'converter_input':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Возврат в меню.", create_menu_keyboard())
+            else:
+                try:
+                    amount = float(text.replace(',', '.'))
+                    if amount <= 0:
+                        await state.update_message(chat_id, "Ошибка: введите положительное число.", create_converter_keyboard())
+                        return
+                    result = await state.convert_manta(chat_id, amount)
+                    if result is None:
+                        await state.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_menu_keyboard())
+                    del state.pending_commands[chat_id]
+                except ValueError:
+                    await state.update_message(chat_id, "Ошибка: введите корректное число.", create_converter_keyboard())
+
+        elif state_data['step'] == 'silent_hours_input':
             if text == "Отмена":
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
@@ -1060,6 +1145,8 @@ async def schedule_restart():
                         state.l2_data_time = None
                         state.fear_greed_cache = None
                         state.fear_greed_time = None
+                        state.converter_cache = None
+                        state.converter_cache_time = None
                         logger.info("Кэши очищены")
                         scanner = Scanner()
                         state = BotState(scanner)
