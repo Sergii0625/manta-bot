@@ -470,10 +470,10 @@ class BotState:
             }
             message = (
                 f"<pre>"
-                f"Конвертация {amount:.2f} MANTA:\n"
+                f"Конвертация {int(amount)} MANTA:\n"
                 f"◆ USDT: {result['USDT']:.2f}\n"
-                f"◆ ETH: {result['ETH']:.6f}\n"
-                f"◆ BTC: {result['BTC']:.8f}"
+                f"◆ ETH:  {result['ETH']:.6f}\n"
+                f"◆ BTC:  {result['BTC']:.8f}"
                 f"</pre>"
             )
             await self.update_message(chat_id, message, create_menu_keyboard())
