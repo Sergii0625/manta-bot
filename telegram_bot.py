@@ -193,8 +193,8 @@ class BotState:
         today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
         default_stats = {
             "Газ": 0, "Manta Price": 0, "Сравнение L2": 0,
-            "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
-            "Тихие часы": 0, "Manta-Конвертер": 0, "Газ-калькулятор": 0
+            "Задать Уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
+            "Тихие Часы": 0, "Manta Конвертер": 0, "Газ Калькулятор": 0
         }
         if today not in self.user_stats[user_id]:
             self.user_stats[user_id][today] = default_stats.copy()
@@ -386,7 +386,7 @@ class BotState:
 
             if not levels:
                 if force_base_message:
-                    await self.update_message(chat_id, base_message + "\n\nУровни не заданы. Используйте 'Задать уровни'.", create_main_keyboard(chat_id))
+                    await self.update_message(chat_id, base_message + "\n\nУровни не заданы. Используйте 'Задать Уровни'.", create_main_keyboard(chat_id))
                 else:
                     logger.info(f"No levels set for chat_id={chat_id}, skipping notification check.")
                 self.user_states[chat_id]['prev_level'] = current_slow
@@ -422,7 +422,7 @@ class BotState:
             await save_silent_hours(chat_id, start_time, end_time)
             self.user_states[chat_id]['silent_hours'] = (start_time, end_time)
             logger.info(f"Set silent hours for chat_id={chat_id}: {start_time}-{end_time}")
-            return True, f"Тихие часы установлены: {start_str}-{end_str}"
+            return True, f"Тихие Часы установлены: {start_str}-{end_str}"
         except ValueError as e:
             logger.error(f"Invalid time format for chat_id={chat_id}: {time_range}, error: {str(e)}")
             return False, "Ошибка: введите время в формате ЧЧ:ММ-ЧЧ:ММ, например, 00:00-07:00"
@@ -434,9 +434,7 @@ class BotState:
         while True:
             try:
                 logger.debug("Running background price fetch")
-                # Обновляем кэш для конвертера и газ-калькулятора
                 await self.fetch_converter_data()
-                # Обновляем кэш для L2 токенов и Manta Price
                 await self.fetch_l2_data()
                 logger.debug("Background price fetch completed")
             except Exception as e:
@@ -458,7 +456,7 @@ class BotState:
                 async with session.get(url, params=params) as response:
                     if response.status != 200:
                         logger.warning(f"CoinGecko API error for converter: {response.status}")
-                        return self.converter_cache  # Возвращаем текущий кэш при ошибке
+                        return self.converter_cache
                     data = await response.json()
                     prices = {coin["id"]: coin["current_price"] for coin in data}
                     self.converter_cache = prices
@@ -467,12 +465,11 @@ class BotState:
                     return prices
         except Exception as e:
             logger.error(f"Error fetching converter data: {str(e)}")
-            return self.converter_cache  # Возвращаем текущий кэш при ошибке
+            return self.converter_cache
 
     async def convert_manta(self, chat_id, amount):
         try:
             prices = self.converter_cache
-            # Если кэш пуст, возвращаем сообщение с просьбой повторить запрос
             if not prices:
                 logger.warning(f"No converter data in cache for chat_id={chat_id}")
                 await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_menu_keyboard())
@@ -506,7 +503,6 @@ class BotState:
     async def calculate_gas_cost(self, chat_id, gas_price, tx_count):
         try:
             prices = self.converter_cache
-            # Если кэш пуст, возвращаем сообщение с просьбой повторить запрос
             if not prices:
                 logger.warning(f"No price data in cache for gas calculator for chat_id={chat_id}")
                 await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_main_keyboard(chat_id))
@@ -514,9 +510,8 @@ class BotState:
 
             eth_usd = prices.get("ethereum")
 
-            # Расчёт стоимости
-            gas_units = 1000000  # Количество газа для транзакции
-            fee_per_tx_eth = gas_price * gas_units / 10**9  # gas_price в Gwei, 1 Gwei = 10^9 wei
+            gas_units = 1000000
+            fee_per_tx_eth = gas_price * gas_units / 10**9
             total_cost_usdt = fee_per_tx_eth * tx_count * eth_usd
 
             message = (
@@ -862,17 +857,17 @@ def create_main_keyboard(chat_id):
 
 def create_menu_keyboard():
     keyboard = [
-        [types.KeyboardButton(text="Manta-Конвертер"), types.KeyboardButton(text="Газ-калькулятор")],
+        [types.KeyboardButton(text="Manta Конвертер"), types.KeyboardButton(text="Газ Калькулятор")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
-        [types.KeyboardButton(text="Страх и Жадность"), types.KeyboardButton(text="Тихие часы")],
-        [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")],
+        [types.KeyboardButton(text="Страх и Жадность"), types.KeyboardButton(text="Тихие Часы")],
+        [types.KeyboardButton(text="Задать Уровни"), types.KeyboardButton(text="Уведомления")],
         [types.KeyboardButton(text="Назад")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def create_silent_hours_keyboard():
     keyboard = [
-        [types.KeyboardButton(text="Отключить тихие часы")],
+        [types.KeyboardButton(text="Отключить Тихие Часы")],
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -927,8 +922,8 @@ async def start_command(message: types.Message):
 
 @state.dp.message(lambda message: message.text in [
     "Газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
-    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Меню", "Назад",
-    "Manta-Конвертер", "Газ-калькулятор"
+    "Задать Уровни", "Уведомления", "Админ", "Тихие Часы", "Меню", "Назад",
+    "Manta Конвертер", "Газ Калькулятор"
 ])
 async def handle_main_button(message: types.Message):
     if not await state.check_access(message):
@@ -942,7 +937,7 @@ async def handle_main_button(message: types.Message):
         state.user_stats[chat_id][today][text] += 1
         await state.save_user_stats(chat_id)
 
-    if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы", "Manta-Конвертер", "Газ-калькулятор"]:
+    if chat_id in state.pending_commands and text not in ["Задать Уровни", "Тихие Часы", "Manta Конвертер", "Газ Калькулятор"]:
         del state.pending_commands[chat_id]
 
     if text == "Газ":
@@ -953,7 +948,7 @@ async def handle_main_button(message: types.Message):
         await state.get_l2_comparison(chat_id)
     elif text == "Страх и Жадность":
         await state.get_fear_greed(chat_id)
-    elif text == "Задать уровни":
+    elif text == "Задать Уровни":
         state.pending_commands[chat_id] = {'step': 'range_selection'}
         await state.update_message(chat_id, "Выберите действие для уровней уведомлений:", create_levels_menu_keyboard())
     elif text == "Уведомления":
@@ -971,19 +966,19 @@ async def handle_main_button(message: types.Message):
             await state.get_admin_stats(chat_id)
         else:
             await state.update_message(chat_id, "Доступ только для админа.", create_main_keyboard(chat_id))
-    elif text == "Тихие часы":
+    elif text == "Тихие Часы":
         state.pending_commands[chat_id] = {'step': 'silent_hours_input'}
         start_time, end_time = state.user_states[chat_id]['silent_hours']
-        current_silent = f"Текущие тихие часы: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}" if start_time and end_time else "Тихие часы не установлены."
+        current_silent = f"Текущие Тихие Часы: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}" if start_time and end_time else "Тихие Часы не установлены."
         await state.update_message(
             chat_id,
             f"{current_silent}\n\nУстановите время, пример: 00:00-07:00",
             create_silent_hours_keyboard()
         )
-    elif text == "Manta-Конвертер":
+    elif text == "Manta Конвертер":
         state.pending_commands[chat_id] = {'step': 'converter_input'}
         await state.update_message(chat_id, "Введите количество MANTA для конвертации:", create_converter_keyboard())
-    elif text == "Газ-калькулятор":
+    elif text == "Газ Калькулятор":
         state.pending_commands[chat_id] = {'step': 'gas_calculator_gas_input'}
         await state.update_message(chat_id, "Введите цену газа в Gwei (например, 0.0015):", create_gas_calculator_keyboard())
     elif text == "Меню":
@@ -1023,7 +1018,6 @@ async def process_value(message: types.Message):
                         return
                     result = await state.convert_manta(chat_id, amount)
                     if result is None:
-                        # Сообщение об ошибке уже отправлено в convert_manta
                         pass
                     del state.pending_commands[chat_id]
                 except ValueError:
@@ -1063,7 +1057,6 @@ async def process_value(message: types.Message):
                         return
                     result = await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
                     if result is None:
-                        # Сообщение об ошибке уже отправлено в calculate_gas_cost
                         pass
                     del state.pending_commands[chat_id]
                 except ValueError:
@@ -1076,12 +1069,12 @@ async def process_value(message: types.Message):
             elif text == "Назад":
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
-            elif text == "Отключить тихие часы":
+            elif text == "Отключить Тихие Часы":
                 await save_silent_hours(chat_id, None, None)
                 state.user_states[chat_id]['silent_hours'] = (None, None)
                 logger.info(f"Disabled silent hours for chat_id={chat_id}")
                 del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Тихие часы отключены.", create_main_keyboard(chat_id))
+                await state.update_message(chat_id, "Тихие Часы отключены.", create_main_keyboard(chat_id))
             else:
                 success, response = await state.set_silent_hours(chat_id, text)
                 if success:
@@ -1293,7 +1286,7 @@ async def main():
         state.dp.start_polling(state.bot),
         scanner.monitor_gas(INTERVAL, monitor_gas_callback),
         schedule_restart(),
-        state.background_price_fetcher()  # Фоновая задача для обновления цен
+        state.background_price_fetcher()
     ]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for i, result in enumerate(results):
