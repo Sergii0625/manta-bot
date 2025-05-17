@@ -509,11 +509,9 @@ class BotState:
                         self.converter_cache_time = current_time
 
             eth_usd = prices.get("ethereum", 2500)  # Fallback to $2500 if price unavailable
-            base_fee_eth = 0.000000000000011  # Fee at Gas Price = 0.000011 Gwei
-            base_gas_price = 0.000011
-            fee_per_tx_eth = (gas_price / base_gas_price) * base_fee_eth
+            gas_units = 21000  # Standard gas for a simple transaction
+            fee_per_tx_eth = gas_price * gas_units * 1e-9  # gas_price in Gwei, 1 Gwei = 10^-9 ETH
             total_cost_usdt = fee_per_tx_eth * tx_count * eth_usd
-            total_cost_cents = total_cost_usdt * 100
 
             message = (
                 f"<pre>"
