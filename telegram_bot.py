@@ -336,7 +336,7 @@ class BotState:
         is_confirmed = False
         if direction == 'down' and all(v <= target_level for v in values):
             is_confirmed = True
-        elif direction == 'up' and v >= target_level for v in values):
+        elif direction == 'up' and all(v >= target_level for v in values):
             is_confirmed = True
 
         if is_confirmed and target_level not in self.user_states[chat_id]['notified_levels']:
