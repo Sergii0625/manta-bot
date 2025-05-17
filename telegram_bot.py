@@ -195,7 +195,7 @@ class BotState:
         default_stats = {
             "Газ": 0, "Manta Price": 0, "Сравнение L2": 0,
             "Задать уровни": 0, "Уведомления": 0, "Админ": 0, "Страх и Жадность": 0,
-            "Тихие часы": 0, "Конвертер": 0
+            "Тихие часы": 0, "Manta-Конвертер": 0, "Газ-калькулятор": 0
         }
         if today not in self.user_stats[user_id]:
             self.user_stats[user_id][today] = default_stats.copy()
@@ -481,6 +481,50 @@ class BotState:
 
         except Exception as e:
             logger.error(f"Error in convert_manta for chat_id={chat_id}: {str(e)}")
+            return None
+
+    async def calculate_gas_cost(self, chat_id, gas_price, tx_count):
+        try:
+            current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
+            if self.converter_cache_time and (current_time - self.converter_cache_time).total_seconds() < self.converter_cooldown and self.converter_cache:
+                prices = self.converter_cache
+            else:
+                url = "https://api.coingecko.com/api/v3/coins/markets"
+                params = {
+                    "vs_currency": "usd",
+                    "ids": "ethereum",
+                    "order": "market_cap_desc",
+                    "per_page": 1,
+                    "page": 1,
+                    "sparkline": "false"
+                }
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params) as response:
+                        if response.status != 200:
+                            logger.error(f"CoinGecko API error for gas calculator: {response.status}")
+                            return None
+                        data = await response.json()
+                        prices = {coin["id"]: coin["current_price"] for coin in data}
+                        self.converter_cache = prices
+                        self.converter_cache_time = current_time
+
+            eth_usd = prices.get("ethereum", 2500)  # Fallback to $2500 if price unavailable
+            base_fee_eth = 0.000000000000011  # Fee at Gas Price = 0.000011 Gwei
+            base_gas_price = 0.000011
+            fee_per_tx_eth = (gas_price / base_gas_price) * base_fee_eth
+            total_cost_usdt = fee_per_tx_eth * tx_count * eth_usd
+            total_cost_cents = total_cost_usdt * 100
+
+            message = (
+                f"<pre>"
+                f"{int(tx_count)} транзакций, газ {gas_price:.6f} Gwei = {total_cost_usdt:.2f} USDT"
+                f"</pre>"
+            )
+            await self.update_message(chat_id, message, create_main_keyboard())
+            return True
+
+        except Exception as e:
+            logger.error(f"Error in calculate_gas_cost for chat_id={chat_id}: {str(e)}")
             return None
 
     async def fetch_l2_data(self):
@@ -810,7 +854,7 @@ def create_main_keyboard(chat_id):
 
 def create_menu_keyboard():
     keyboard = [
-        [types.KeyboardButton(text="Конвертер")],
+        [types.KeyboardButton(text="Manta-Конвертер"), types.KeyboardButton(text="Газ-калькулятор")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Страх и Жадность"), types.KeyboardButton(text="Тихие часы")],
         [types.KeyboardButton(text="Задать уровни"), types.KeyboardButton(text="Уведомления")],
@@ -826,6 +870,12 @@ def create_silent_hours_keyboard():
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def create_converter_keyboard():
+    keyboard = [
+        [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
+    ]
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def create_gas_calculator_keyboard():
     keyboard = [
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
@@ -869,7 +919,8 @@ async def start_command(message: types.Message):
 
 @state.dp.message(lambda message: message.text in [
     "Газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
-    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Меню", "Назад", "Конвертер"
+    "Задать уровни", "Уведомления", "Админ", "Тихие часы", "Меню", "Назад",
+    "Manta-Конвертер", "Газ-калькулятор"
 ])
 async def handle_main_button(message: types.Message):
     if not await state.check_access(message):
@@ -883,7 +934,7 @@ async def handle_main_button(message: types.Message):
         state.user_stats[chat_id][today][text] += 1
         await state.save_user_stats(chat_id)
 
-    if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы", "Конвертер"]:
+    if chat_id in state.pending_commands and text not in ["Задать уровни", "Тихие часы", "Manta-Конвертер", "Газ-калькулятор"]:
         del state.pending_commands[chat_id]
 
     if text == "Газ":
@@ -921,9 +972,12 @@ async def handle_main_button(message: types.Message):
             f"{current_silent}\n\nУстановите время, пример: 00:00-07:00",
             create_silent_hours_keyboard()
         )
-    elif text == "Конвертер":
+    elif text == "Manta-Конвертер":
         state.pending_commands[chat_id] = {'step': 'converter_input'}
         await state.update_message(chat_id, "Введите количество MANTA для конвертации:", create_converter_keyboard())
+    elif text == "Газ-калькулятор":
+        state.pending_commands[chat_id] = {'step': 'gas_calculator_gas_input'}
+        await state.update_message(chat_id, "Введите цену газа в Gwei (например, 0.0015):", create_gas_calculator_keyboard())
     elif text == "Меню":
         await state.update_message(chat_id, "Выберите действие:", create_menu_keyboard())
     elif text == "Назад":
@@ -965,6 +1019,45 @@ async def process_value(message: types.Message):
                     del state.pending_commands[chat_id]
                 except ValueError:
                     await state.update_message(chat_id, "Ошибка: введите корректное число.", create_converter_keyboard())
+
+        elif state_data['step'] == 'gas_calculator_gas_input':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Возврат в меню.", create_menu_keyboard())
+            else:
+                try:
+                    gas_price = float(text.replace(',', '.'))
+                    if gas_price <= 0:
+                        await state.update_message(chat_id, "Ошибка: введите положительное число.", create_gas_calculator_keyboard())
+                        return
+                    state_data['gas_price'] = gas_price
+                    state_data['step'] = 'gas_calculator_tx_count_input'
+                    await state.update_message(chat_id, "Введите количество транзакций (например, 100):", create_gas_calculator_keyboard())
+                except ValueError:
+                    await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую).", create_gas_calculator_keyboard())
+
+        elif state_data['step'] == 'gas_calculator_tx_count_input':
+            if text == "Отмена":
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+            elif text == "Назад":
+                state_data['step'] = 'gas_calculator_gas_input'
+                await state.update_message(chat_id, "Введите цену газа в Gwei (например, 0.0015):", create_gas_calculator_keyboard())
+            else:
+                try:
+                    tx_count = int(text)
+                    if tx_count <= 0:
+                        await state.update_message(chat_id, "Ошибка: введите положительное целое число.", create_gas_calculator_keyboard())
+                        return
+                    result = await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
+                    if result is None:
+                        await state.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_main_keyboard())
+                    del state.pending_commands[chat_id]
+                except ValueError:
+                    await state.update_message(chat_id, "Ошибка: введите целое число.", create_gas_calculator_keyboard())
 
         elif state_data['step'] == 'silent_hours_input':
             if text == "Отмена":
