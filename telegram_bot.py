@@ -431,36 +431,52 @@ class BotState:
             logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
             return False, f"Ошибка: {str(e)}"
 
+    async def fetch_converter_data(self):
+        url = "https://api.coingecko.com/api/v3/coins/markets"
+        params = {
+            "vs_currency": "usd",
+            "ids": "manta-network,ethereum,bitcoin",
+            "order": "market_cap_desc",
+            "per_page": 3,
+            "page": 1,
+            "sparkline": "false"
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        logger.warning(f"CoinGecko API error for converter: {response.status}")
+                        return None
+                    data = await response.json()
+                    prices = {coin["id"]: coin["current_price"] for coin in data}
+                    self.converter_cache = prices
+                    self.converter_cache_time = datetime.now(pytz.timezone('Europe/Kyiv'))
+                    logger.debug("Converter data fetched and cached")
+                    return prices
+        except Exception as e:
+            logger.error(f"Error fetching converter data: {str(e)}")
+            return None
+
     async def convert_manta(self, chat_id, amount):
         try:
-            current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
-            if self.converter_cache_time and (current_time - self.converter_cache_time).total_seconds() < self.converter_cooldown and self.converter_cache:
+            # Сначала пытаемся получить актуальные данные
+            prices = await self.fetch_converter_data()
+            # Если не удалось получить новые данные, используем кэш
+            if prices is None and self.converter_cache:
                 prices = self.converter_cache
-            else:
-                url = "https://api.coingecko.com/api/v3/coins/markets"
-                params = {
-                    "vs_currency": "usd",
-                    "ids": "manta-network,ethereum,bitcoin",
-                    "order": "market_cap_desc",
-                    "per_page": 3,
-                    "page": 1,
-                    "sparkline": "false"
-                }
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url, params=params) as response:
-                        if response.status != 200:
-                            logger.error(f"CoinGecko API error for converter: {response.status}")
-                            return None
-                        data = await response.json()
-                        prices = {coin["id"]: coin["current_price"] for coin in data}
-                        self.converter_cache = prices
-                        self.converter_cache_time = current_time
+                logger.debug(f"Using cached converter data for chat_id={chat_id}")
+            # Если кэш тоже пуст, возвращаем None
+            if prices is None:
+                logger.error(f"No converter data available for chat_id={chat_id}")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_menu_keyboard())
+                return None
 
             manta_usd = prices.get("manta-network", 0)
             eth_usd = prices.get("ethereum", 0)
             btc_usd = prices.get("bitcoin", 0)
             if not all([manta_usd, eth_usd, btc_usd]):
                 logger.error(f"Missing price data for converter: manta={manta_usd}, eth={eth_usd}, btc={btc_usd}")
+                await self.update_message(chat_id, "⚠️ Неполные данные о ценах.", create_menu_keyboard())
                 return None
 
             result = {
@@ -481,36 +497,50 @@ class BotState:
 
         except Exception as e:
             logger.error(f"Error in convert_manta for chat_id={chat_id}: {str(e)}")
+            await self.update_message(chat_id, "⚠️ Ошибка при конвертации.", create_menu_keyboard())
             return None
 
     async def calculate_gas_cost(self, chat_id, gas_price, tx_count):
         try:
-            current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
-            if self.converter_cache_time and (current_time - self.converter_cache_time).total_seconds() < self.converter_cooldown and self.converter_cache:
-                prices = self.converter_cache
-            else:
-                url = "https://api.coingecko.com/api/v3/coins/markets"
-                params = {
-                    "vs_currency": "usd",
-                    "ids": "ethereum",
-                    "order": "market_cap_desc",
-                    "per_page": 1,
-                    "page": 1,
-                    "sparkline": "false"
-                }
+            # Сначала пытаемся получить актуальные данные
+            url = "https://api.coingecko.com/api/v3/coins/markets"
+            params = {
+                "vs_currency": "usd",
+                "ids": "ethereum",
+                "order": "market_cap_desc",
+                "per_page": 1,
+                "page": 1,
+                "sparkline": "false"
+            }
+            prices = None
+            try:
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, params=params) as response:
                         if response.status != 200:
-                            logger.error(f"CoinGecko API error for gas calculator: {response.status}")
-                            return None
-                        data = await response.json()
-                        prices = {coin["id"]: coin["current_price"] for coin in data}
-                        self.converter_cache = prices
-                        self.converter_cache_time = current_time
+                            logger.warning(f"CoinGecko API error for gas calculator: {response.status}")
+                        else:
+                            data = await response.json()
+                            prices = {coin["id"]: coin["current_price"] for coin in data}
+                            self.converter_cache = prices
+                            self.converter_cache_time = datetime.now(pytz.timezone('Europe/Kyiv'))
+                            logger.debug("Gas calculator data fetched and cached")
+            except Exception as e:
+                logger.error(f"Error fetching gas calculator data: {str(e)}")
 
-            eth_usd = prices.get("ethereum", 2500)  # Fallback to $2500 if price unavailable
-            gas_units = 21000  # Standard gas for a simple transaction
-            fee_per_tx_eth = gas_price * gas_units * 1e-9  # gas_price in Gwei, 1 Gwei = 10^-9 ETH
+            # Если не удалось получить новые данные, используем кэш
+            if prices is None and self.converter_cache:
+                prices = self.converter_cache
+                logger.debug(f"Using cached gas calculator data for chat_id={chat_id}")
+
+            # Если кэш тоже пуст, используем резервную цену
+            if prices is None:
+                eth_usd = 2500  # Резервная цена
+                logger.warning(f"No price data available for gas calculator, using fallback price: {eth_usd}")
+            else:
+                eth_usd = prices.get("ethereum", 2500)
+
+            gas_units = 21000  # Стандартный газ для простой транзакции
+            fee_per_tx_eth = gas_price * gas_units * 1e-9  # gas_price в Gwei, 1 Gwei = 10^-9 ETH
             total_cost_usdt = fee_per_tx_eth * tx_count * eth_usd
 
             message = (
@@ -523,7 +553,7 @@ class BotState:
 
         except Exception as e:
             logger.error(f"Error in calculate_gas_cost for chat_id={chat_id}: {str(e)}")
-            await self.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_main_keyboard(chat_id))
+            await self.update_message(chat_id, "⚠️ Ошибка при расчёте стоимости газа.", create_main_keyboard(chat_id))
             return None
 
     async def fetch_l2_data(self):
@@ -539,10 +569,13 @@ class BotState:
         }
         token_data = {}
 
+        # Проверяем, можно ли использовать кэш
         current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
         if self.l2_data_time and (current_time - self.l2_data_time).total_seconds() < self.l2_data_cooldown and self.l2_data_cache:
+            logger.debug("Returning cached L2 data")
             return self.l2_data_cache
 
+        # Пытаемся получить актуальные данные
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
@@ -554,50 +587,63 @@ class BotState:
             "price_change_percentage": "24h,7d,30d"
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params) as response:
-                if response.status != 200:
-                    logger.error(f"CoinGecko API error: {response.status}")
-                    return None
-                data = await response.json()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        logger.warning(f"CoinGecko API error: {response.status}")
+                        # Если есть кэш, возвращаем его
+                        if self.l2_data_cache:
+                            logger.debug("API failed, returning cached L2 data")
+                            return self.l2_data_cache
+                        return None
+                    data = await response.json()
 
-                token_map = {coin["id"]: coin for coin in data}
-                for name, token_id in l2_tokens.items():
-                    coin = token_map.get(token_id)
-                    if coin:
-                        price = coin.get("current_price", "Н/Д")
-                        price_change_24h = coin.get("price_change_percentage_24h_in_currency", "Н/Д")
-                        price_change_7d = coin.get("price_change_percentage_7d_in_currency", "Н/Д")
-                        price_change_30d = coin.get("price_change_percentage_30d_in_currency", "Н/Д")
-                        price_change_all = ((price - coin.get("ath", price)) / coin.get("ath", price) * 100) if price != "Н/Д" and coin.get("ath") else "Н/Д"
-                        ath_price = coin.get("ath", "Н/Д")
-                        ath_date = coin.get("ath_date", "Н/Д")
-                        if ath_date != "Н/Д":
-                            ath_date = datetime.strptime(ath_date, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d.%m.%Y")
-                        atl_price = coin.get("atl", "Н/Д")
-                        atl_date = coin.get("atl_date", "Н/Д")
-                        if atl_date != "Н/Д":
-                            atl_date = datetime.strptime(atl_date, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d.%m.%Y")
-                        token_data[name] = {
-                            "price": price,
-                            "24h": price_change_24h if price_change_24h is not None else "Н/Д",
-                            "7d": price_change_7d if price_change_7d is not None else "Н/Д",
-                            "30d": price_change_30d if price_change_30d is not None else "Н/Д",
-                            "all": price_change_all,
-                            "ath_price": ath_price,
-                            "ath_date": ath_date,
-                            "atl_price": atl_price,
-                            "atl_date": atl_date
-                        }
-                    else:
-                        token_data[name] = {
-                            "price": "Н/Д", "24h": "Н/Д", "7d": "Н/Д", "30d": "Н/Д", "all": "Н/Д",
-                            "ath_price": "Н/Д", "ath_date": "Н/Д", "atl_price": "Н/Д", "atl_date": "Н/Д"
-                        }
+                    token_map = {coin["id"]: coin for coin in data}
+                    for name, token_id in l2_tokens.items():
+                        coin = token_map.get(token_id)
+                        if coin:
+                            price = coin.get("current_price", "Н/Д")
+                            price_change_24h = coin.get("price_change_percentage_24h_in_currency", "Н/Д")
+                            price_change_7d = coin.get("price_change_percentage_7d_in_currency", "Н/Д")
+                            price_change_30d = coin.get("price_change_percentage_30d_in_currency", "Н/Д")
+                            price_change_all = ((price - coin.get("ath", price)) / coin.get("ath", price) * 100) if price != "Н/Д" and coin.get("ath") else "Н/Д"
+                            ath_price = coin.get("ath", "Н/Д")
+                            ath_date = coin.get("ath_date", "Н/Д")
+                            if ath_date != "Н/Д":
+                                ath_date = datetime.strptime(ath_date, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d.%m.%Y")
+                            atl_price = coin.get("atl", "Н/Д")
+                            atl_date = coin.get("atl_date", "Н/Д")
+                            if atl_date != "Н/Д":
+                                atl_date = datetime.strptime(atl_date, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d.%m.%Y")
+                            token_data[name] = {
+                                "price": price,
+                                "24h": price_change_24h if price_change_24h is not None else "Н/Д",
+                                "7d": price_change_7d if price_change_7d is not None else "Н/Д",
+                                "30d": price_change_30d if price_change_30d is not None else "Н/Д",
+                                "all": price_change_all,
+                                "ath_price": ath_price,
+                                "ath_date": ath_date,
+                                "atl_price": atl_price,
+                                "atl_date": atl_date
+                            }
+                        else:
+                            token_data[name] = {
+                                "price": "Н/Д", "24h": "Н/Д", "7d": "Н/Д", "30d": "Н/Д", "all": "Н/Д",
+                                "ath_price": "Н/Д", "ath_date": "Н/Д", "atl_price": "Н/Д", "atl_date": "Н/Д"
+                            }
 
-        self.l2_data_cache = token_data
-        self.l2_data_time = current_time
-        return token_data
+                    self.l2_data_cache = token_data
+                    self.l2_data_time = current_time
+                    logger.debug("L2 data fetched and cached")
+                    return token_data
+        except Exception as e:
+            logger.error(f"Error fetching L2 data: {str(e)}")
+            # Если есть кэш, возвращаем его
+            if self.l2_data_cache:
+                logger.debug("API failed, returning cached L2 data")
+                return self.l2_data_cache
+            return None
 
     async def fetch_fear_greed(self):
         current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
@@ -668,7 +714,7 @@ class BotState:
         try:
             token_data = await self.fetch_l2_data()
             if not token_data:
-                await self.update_message(chat_id, "⚠️ Не удалось получить данные от CoinGecko.", create_main_keyboard(chat_id))
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_main_keyboard(chat_id))
                 return
 
             manta_data = token_data["MANTA"]
@@ -715,7 +761,7 @@ class BotState:
         try:
             token_data = await self.fetch_l2_data()
             if not token_data:
-                await self.update_message(chat_id, "⚠️ Не удалось получить данные от CoinGecko.", create_main_keyboard(chat_id))
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_main_keyboard(chat_id))
                 return
 
             message = (
@@ -1014,7 +1060,8 @@ async def process_value(message: types.Message):
                         return
                     result = await state.convert_manta(chat_id, amount)
                     if result is None:
-                        await state.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_menu_keyboard())
+                        # Сообщение об ошибке уже отправлено в convert_manta
+                        pass
                     del state.pending_commands[chat_id]
                 except ValueError:
                     await state.update_message(chat_id, "Ошибка: введите корректное число.", create_converter_keyboard())
@@ -1053,7 +1100,8 @@ async def process_value(message: types.Message):
                         return
                     result = await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
                     if result is None:
-                        await state.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_main_keyboard(chat_id))
+                        # Сообщение об ошибке уже отправлено в calculate_gas_cost
+                        pass
                     del state.pending_commands[chat_id]
                 except ValueError:
                     await state.update_message(chat_id, "Ошибка: введите целое число.", create_gas_calculator_keyboard())
