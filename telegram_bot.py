@@ -296,7 +296,7 @@ class BotState:
             self.message_ids[chat_id] = msg.message_id
             logger.debug(f"Sent new message_id={msg.message_id} for chat_id={chat_id}")
         except Exception as e:
-            logger.error(f"Failed to send message to chat_id={chat_id}: {str(e)}")
+            logger.error(f"Failed to send message to chat_id={chat_id}: {e}")
             raise
 
     async def reset_notified_levels(self, chat_id):
@@ -336,7 +336,7 @@ class BotState:
         is_confirmed = False
         if direction == 'down' and all(v <= target_level for v in values):
             is_confirmed = True
-        elif direction == 'up' and all(v >= target_level for v in values):
+        elif direction == 'up' and v >= target_level for v in values):
             is_confirmed = True
 
         if is_confirmed and target_level not in self.user_states[chat_id]['notified_levels']:
@@ -520,11 +520,12 @@ class BotState:
                 f"{int(tx_count)} транзакций, газ {gas_price:.6f} Gwei = {total_cost_usdt:.2f} USDT"
                 f"</pre>"
             )
-            await self.update_message(chat_id, message, create_main_keyboard())
+            await self.update_message(chat_id, message, create_main_keyboard(chat_id))
             return True
 
         except Exception as e:
             logger.error(f"Error in calculate_gas_cost for chat_id={chat_id}: {str(e)}")
+            await self.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_main_keyboard(chat_id))
             return None
 
     async def fetch_l2_data(self):
@@ -1054,7 +1055,7 @@ async def process_value(message: types.Message):
                         return
                     result = await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
                     if result is None:
-                        await state.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_main_keyboard())
+                        await state.update_message(chat_id, "⚠️ Не удалось получить данные о ценах.", create_main_keyboard(chat_id))
                     del state.pending_commands[chat_id]
                 except ValueError:
                     await state.update_message(chat_id, "Ошибка: введите целое число.", create_gas_calculator_keyboard())
