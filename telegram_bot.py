@@ -502,7 +502,7 @@ class BotState:
 
     async def calculate_gas_cost(self, chat_id, gas_price, tx_count):
         try:
-            # Сначала пытаемся получить актуальные данные
+            # Сначала пытаемся получить актуальную цену ETH
             url = "https://api.coingecko.com/api/v3/coins/markets"
             params = {
                 "vs_currency": "usd",
@@ -539,13 +539,14 @@ class BotState:
             else:
                 eth_usd = prices.get("ethereum", 2500)
 
-            gas_units = 21000  # Стандартный газ для простой транзакции
-            fee_per_tx_eth = gas_price * gas_units * 1e-9  # gas_price в Gwei, 1 Gwei = 10^-9 ETH
+            # Расчёт стоимости
+            gas_units = 1000000  # Количество газа для транзакции
+            fee_per_tx_eth = gas_price * gas_units / 10**9  # gas_price в Gwei, 1 Gwei = 10^9 wei
             total_cost_usdt = fee_per_tx_eth * tx_count * eth_usd
 
             message = (
                 f"<pre>"
-                f"{int(tx_count)} транзакций, газ {gas_price:.6f} Gwei = {total_cost_usdt:.2f} USDT"
+                f"{int(tx_count)} транзакций, газ {gas_price:.6f} Gwei = {total_cost_usdt:.4f} USDT"
                 f"</pre>"
             )
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
