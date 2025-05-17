@@ -291,6 +291,15 @@ class BotState:
 
     async def update_message(self, chat_id, text, reply_markup=None):
         try:
+            # Удаляем предыдущее сообщение бота, если оно существует
+            if chat_id in self.message_ids:
+                try:
+                    await self.bot.delete_message(chat_id, self.message_ids[chat_id])
+                    logger.debug(f"Deleted previous bot message_id={self.message_ids[chat_id]} for chat_id={chat_id}")
+                except Exception as e:
+                    logger.debug(f"Failed to delete previous bot message_id={self.message_ids[chat_id]} for chat_id={chat_id}: {e}")
+
+            # Отправляем новое сообщение
             msg = await self.bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
             self.message_ids[chat_id] = msg.message_id
             logger.debug(f"Sent new message_id={msg.message_id} for chat_id={chat_id}")
@@ -472,18 +481,19 @@ class BotState:
     async def convert_manta(self, chat_id, amount):
         try:
             prices = self.converter_cache
-            # Если кэш пуст, используем резервные цены
             if not prices:
-                logger.warning(f"No converter data in cache for chat_id={chat_id}, using fallback prices")
-                prices = {
-                    "manta-network": 1.5,  # Резервная цена MANTA
-                    "ethereum": 2500,     # Резервная цена ETH
-                    "bitcoin": 65000      # Резервная цена BTC
-                }
+                logger.warning(f"No converter data in cache for chat_id={chat_id}")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_menu_keyboard())
+                return None
 
-            manta_usd = prices.get("manta-network", 1.5)
-            eth_usd = prices.get("ethereum", 2500)
-            btc_usd = prices.get("bitcoin", 65000)
+            manta_usd = prices.get("manta-network")
+            eth_usd = prices.get("ethereum")
+            btc_usd = prices.get("bitcoin")
+
+            if not all([manta_usd, eth_usd, btc_usd]):
+                logger.warning(f"Incomplete price data for chat_id={chat_id}: {prices}")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_menu_keyboard())
+                return None
 
             result = {
                 "USDT": amount * manta_usd,
@@ -509,12 +519,16 @@ class BotState:
     async def calculate_gas_cost(self, chat_id, gas_price, tx_count):
         try:
             prices = self.converter_cache
-            # Если кэш пуст, используем резервную цену
             if not prices:
-                logger.warning(f"No price data in cache for gas calculator for chat_id={chat_id}, using fallback price")
-                eth_usd = 2500  # Резервная цена
-            else:
-                eth_usd = prices.get("ethereum", 2500)
+                logger.warning(f"No price data in cache for gas calculator for chat_id={chat_id}")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_main_keyboard(chat_id))
+                return None
+
+            eth_usd = prices.get("ethereum")
+            if not eth_usd:
+                logger.warning(f"No ETH price data for chat_id={chat_id}")
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_main_keyboard(chat_id))
+                return None
 
             # Расчёт стоимости
             gas_units = 1000000  # Количество газа для транзакции
@@ -678,7 +692,7 @@ class BotState:
             token_data = self.l2_data_cache
             if not token_data:
                 logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_main_keyboard(chat_id))
                 return
 
             manta_data = token_data["MANTA"]
@@ -726,7 +740,7 @@ class BotState:
             token_data = self.l2_data_cache
             if not token_data:
                 logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Повторите запрос через пару минут.", create_main_keyboard(chat_id))
                 return
 
             message = (
@@ -924,8 +938,9 @@ async def start_command(message: types.Message):
     await state.update_message(chat_id, "<b>Бот для Manta Pacific запущен.</b>\nВыберите действие:", create_main_keyboard(chat_id))
     try:
         await message.delete()
+        logger.debug(f"Deleted start command message_id={message.message_id} for chat_id={chat_id}")
     except Exception as e:
-        logger.error(f"Failed to delete start command message_id={message.message_id}: {e}")
+        logger.debug(f"Failed to delete start command message_id={message.message_id}: {e}")
 
 @state.dp.message(lambda message: message.text in [
     "Газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
@@ -938,6 +953,13 @@ async def handle_main_button(message: types.Message):
     chat_id = message.chat.id
     text = message.text
     logger.debug(f"Button pressed: {text} by chat_id={chat_id}")
+
+    # Удаляем сообщение пользователя
+    try:
+        await message.delete()
+        logger.debug(f"Deleted user command message_id={message.message_id} for chat_id={chat_id}")
+    except Exception as e:
+        logger.debug(f"Failed to delete user command message_id={message.message_id} for chat_id={chat_id}: {e}")
 
     today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
     if text not in ["Меню", "Назад"]:
@@ -993,11 +1015,6 @@ async def handle_main_button(message: types.Message):
     elif text == "Назад":
         await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
 
-    try:
-        await message.delete()
-    except Exception as e:
-        logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
-
 @state.dp.message()
 async def process_value(message: types.Message):
     if not await state.check_access(message):
@@ -1005,211 +1022,214 @@ async def process_value(message: types.Message):
     chat_id = message.chat.id
     text = message.text.strip()
 
-    if chat_id not in state.pending_commands:
-        await state.update_message(chat_id, "Выберите действие с помощью кнопок.", create_main_keyboard(chat_id))
-    else:
-        state_data = state.pending_commands[chat_id]
-
-        if state_data['step'] == 'converter_input':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Возврат в меню.", create_menu_keyboard())
-            else:
-                try:
-                    amount = float(text.replace(',', '.'))
-                    if amount <= 0:
-                        await state.update_message(chat_id, "Ошибка: введите положительное число.", create_converter_keyboard())
-                        return
-                    result = await state.convert_manta(chat_id, amount)
-                    if result is None:
-                        # Сообщение об ошибке уже отправлено в convert_manta
-                        pass
-                    del state.pending_commands[chat_id]
-                except ValueError:
-                    await state.update_message(chat_id, "Ошибка: введите корректное число.", create_converter_keyboard())
-
-        elif state_data['step'] == 'gas_calculator_gas_input':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Возврат в меню.", create_menu_keyboard())
-            else:
-                try:
-                    gas_price = float(text.replace(',', '.'))
-                    if gas_price <= 0:
-                        await state.update_message(chat_id, "Ошибка: введите положительное число.", create_gas_calculator_keyboard())
-                        return
-                    state_data['gas_price'] = gas_price
-                    state_data['step'] = 'gas_calculator_tx_count_input'
-                    await state.update_message(chat_id, "Введите количество транзакций (например, 100):", create_gas_calculator_keyboard())
-                except ValueError:
-                    await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую).", create_gas_calculator_keyboard())
-
-        elif state_data['step'] == 'gas_calculator_tx_count_input':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                state_data['step'] = 'gas_calculator_gas_input'
-                await state.update_message(chat_id, "Введите цену газа в Gwei (например, 0.0015):", create_gas_calculator_keyboard())
-            else:
-                try:
-                    tx_count = int(text)
-                    if tx_count <= 0:
-                        await state.update_message(chat_id, "Ошибка: введите положительное целое число.", create_gas_calculator_keyboard())
-                        return
-                    result = await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
-                    if result is None:
-                        # Сообщение об ошибке уже отправлено в calculate_gas_cost
-                        pass
-                    del state.pending_commands[chat_id]
-                except ValueError:
-                    await state.update_message(chat_id, "Ошибка: введите целое число.", create_gas_calculator_keyboard())
-
-        elif state_data['step'] == 'silent_hours_input':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
-            elif text == "Отключить тихие часы":
-                await save_silent_hours(chat_id, None, None)
-                state.user_states[chat_id]['silent_hours'] = (None, None)
-                logger.info(f"Disabled silent hours for chat_id={chat_id}")
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Тихие часы отключены.", create_main_keyboard(chat_id))
-            else:
-                success, response = await state.set_silent_hours(chat_id, text)
-                if success:
-                    del state.pending_commands[chat_id]
-                    await state.update_message(chat_id, response, create_main_keyboard(chat_id))
-                else:
-                    await state.update_message(chat_id, response, create_silent_hours_keyboard())
-
-        elif state_data['step'] == 'range_selection':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
-            elif text == "0.00001–0.01":
-                min_val, max_val = 0.00001, 0.01
-                state_data['range'] = (min_val, max_val)
-                state_data['levels'] = state.user_states[chat_id]['current_levels'].copy()
-                state_data['step'] = 'level_input'
-                await state.update_message(chat_id, "Введите уровень от 0,00001 до 0,01:", create_level_input_keyboard())
-            elif text == "Удалить уровни":
-                if not state.user_states[chat_id]['current_levels']:
-                    await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
-                    del state.pending_commands[chat_id]
-                else:
-                    state_data['step'] = 'delete_level_selection'
-                    await state.update_message(chat_id, "Выберите уровень для удаления:", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
-            else:
-                await state.update_message(chat_id, "Выберите действие из предложенных.", create_levels_menu_keyboard())
-
-        elif state_data['step'] == 'level_input':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                state_data['step'] = 'range_selection'
-                await state.update_message(chat_id, "Возврат к выбору диапазона.", create_levels_menu_keyboard())
-            elif text == "Добавить еще уровень" or text == "Завершить":
-                await state.update_message(chat_id, "Сначала введите уровень.", create_level_input_keyboard())
-            else:
-                try:
-                    text_normalized = text.replace(',', '.')
-                    level = Decimal(text_normalized)
-                    min_val, max_val = state_data['range']
-                    if not (min_val <= float(level) <= max_val):
-                        await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
-                        return
-
-                    if level not in state_data['levels']:
-                        state_data['levels'].append(level)
-                        await state.save_levels(chat_id, state_data['levels'])
-                    if len(state_data['levels']) >= 100:
-                        del state.pending_commands[chat_id]
-                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
-                    else:
-                        state_data['step'] = 'level_choice'
-                        await state.update_message(chat_id, f"Уровень {level:.6f} добавлен. Что дальше?", create_level_input_keyboard())
-                except ValueError:
-                    await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
-
-        elif state_data['step'] == 'level_choice':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                state_data['step'] = 'level_input'
-                min_val, max_val = state_data['range']
-                await state.update_message(chat_id, f"Введите уровень от {min_val} до {max_val}:", create_level_input_keyboard())
-            elif text == "Добавить еще уровень":
-                state_data['step'] = 'level_input'
-                min_val, max_val = state_data['range']
-                await state.update_message(chat_id, f"Введите следующий уровень (в пределах {min_val}–{max_val}):", create_level_input_keyboard())
-            elif text == "Завершить":
-                await state.save_levels(chat_id, state_data['levels'])
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Уровни сохранены.", create_main_keyboard(chat_id))
-            else:
-                try:
-                    text_normalized = text.replace(',', '.')
-                    level = Decimal(text_normalized)
-                    min_val, max_val = state_data['range']
-                    if not (min_val <= float(level) <= max_val):
-                        await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
-                        return
-
-                    if level not in state_data['levels']:
-                        state_data['levels'].append(level)
-                        await state.save_levels(chat_id, state_data['levels'])
-                    if len(state_data['levels']) >= 100:
-                        del state.pending_commands[chat_id]
-                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
-                    else:
-                        state_data['step'] = 'level_choice'
-                        await state.update_message(chat_id, f"Уровень {level:.6f} добавлен. Что дальше?", create_level_input_keyboard())
-                except ValueError:
-                    await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
-
-        elif state_data['step'] == 'delete_level_selection':
-            if text == "Отмена":
-                del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Удаление уровней отменено.", create_main_keyboard(chat_id))
-            elif text == "Назад":
-                state_data['step'] = 'range_selection'
-                await state.update_message(chat_id, "Возврат к выбору действия.", create_levels_menu_keyboard())
-            elif text.startswith("Удалить "):
-                level_str = text.replace("Удалить ", "").replace(" Gwei", "")
-                try:
-                    level_to_delete = Decimal(level_str)
-                    if level_to_delete in state.user_states[chat_id]['current_levels']:
-                        state.user_states[chat_id]['current_levels'].remove(level_to_delete)
-                        await state.save_levels(chat_id, state.user_states[chat_id]['current_levels'])
-                        del state.pending_commands[chat_id]
-                        await state.update_message(chat_id, f"Уровень {level_to_delete:.6f} Gwei удалён.", create_main_keyboard(chat_id))
-                    else:
-                        await state.update_message(chat_id, "Уровень не найден.", create_main_keyboard(chat_id))
-                        del state.pending_commands[chat_id]
-                except ValueError:
-                    await state.update_message(chat_id, "Ошибка при удалении уровня.", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
-            else:
-                await state.update_message(chat_id, "Выберите уровень для удаления.", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
-
+    # Удаляем сообщение пользователя
     try:
         await message.delete()
+        logger.debug(f"Deleted user input message_id={message.message_id} for chat_id={chat_id}")
     except Exception as e:
-        logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
+        logger.debug(f"Failed to delete user input message_id={message.message_id} for chat_id={chat_id}: {e}")
+
+    if chat_id not in state.pending_commands:
+        await state.update_message(chat_id, "Выберите действие с помощью кнопок.", create_main_keyboard(chat_id))
+        return
+
+    state_data = state.pending_commands[chat_id]
+
+    if state_data['step'] == 'converter_input':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Возврат в меню.", create_menu_keyboard())
+        else:
+            try:
+                amount = float(text.replace(',', '.'))
+                if amount <= 0:
+                    await state.update_message(chat_id, "Ошибка: введите положительное число.", create_converter_keyboard())
+                    return
+                result = await state.convert_manta(chat_id, amount)
+                if result is None:
+                    # Сообщение об ошибке уже отправлено в convert_manta
+                    pass
+                del state.pending_commands[chat_id]
+            except ValueError:
+                await state.update_message(chat_id, "Ошибка: введите корректное число.", create_converter_keyboard())
+
+    elif state_data['step'] == 'gas_calculator_gas_input':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Возврат в меню.", create_menu_keyboard())
+        else:
+            try:
+                gas_price = float(text.replace(',', '.'))
+                if gas_price <= 0:
+                    await state.update_message(chat_id, "Ошибка: введите положительное число.", create_gas_calculator_keyboard())
+                    return
+                state_data['gas_price'] = gas_price
+                state_data['step'] = 'gas_calculator_tx_count_input'
+                await state.update_message(chat_id, "Введите количество транзакций (например, 100):", create_gas_calculator_keyboard())
+            except ValueError:
+                await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую).", create_gas_calculator_keyboard())
+
+    elif state_data['step'] == 'gas_calculator_tx_count_input':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            state_data['step'] = 'gas_calculator_gas_input'
+            await state.update_message(chat_id, "Введите цену газа в Gwei (например, 0.0015):", create_gas_calculator_keyboard())
+        else:
+            try:
+                tx_count = int(text)
+                if tx_count <= 0:
+                    await state.update_message(chat_id, "Ошибка: введите положительное целое число.", create_gas_calculator_keyboard())
+                    return
+                result = await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
+                if result is None:
+                    # Сообщение об ошибке уже отправлено в calculate_gas_cost
+                    pass
+                del state.pending_commands[chat_id]
+            except ValueError:
+                await state.update_message(chat_id, "Ошибка: введите целое число.", create_gas_calculator_keyboard())
+
+    elif state_data['step'] == 'silent_hours_input':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
+        elif text == 'Отключить тихие часы':
+            await save_silent_hours(chat_id, None, None)
+            state.user_states[chat_id]['silent_hours'] = (None, None)
+            logger.info(f"Disabled silent hours for chat_id={chat_id}")
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Тихие часы отключены.", create_main_keyboard(chat_id))
+        else:
+            success, response = await state.set_silent_hours(chat_id, text)
+            if success:
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, response, create_main_keyboard(chat_id))
+            else:
+                await state.update_message(chat_id, response, create_silent_hours_keyboard())
+
+    elif state_data['step'] == 'range_selection':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
+        elif text == '0.00001–0.01':
+            min_val, max_val = 0.00001, 0.01
+            state_data['range'] = (min_val, max_val)
+            state_data['levels'] = state.user_states[chat_id]['current_levels'].copy()
+            state_data['step'] = 'level_input'
+            await state.update_message(chat_id, "Введите уровень от 0,00001 до 0,01:", create_level_input_keyboard())
+        elif text == 'Удалить уровни':
+            if not state.user_states[chat_id]['current_levels']:
+                await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
+                del state.pending_commands[chat_id]
+            else:
+                state_data['step'] = 'delete_level_selection'
+                await state.update_message(chat_id, "Выберите уровень для удаления:", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
+        else:
+            await state.update_message(chat_id, "Выберите действие из предложенных.", create_levels_menu_keyboard())
+
+    elif state_data['step'] == 'level_input':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            state_data['step'] = 'range_selection'
+            await state.update_message(chat_id, "Возврат к выбору диапазона.", create_levels_menu_keyboard())
+        elif text in ['Добавить еще уровень', 'Завершить']:
+            await state.update_message(chat_id, "Сначала введите уровень.", create_level_input_keyboard())
+        else:
+            try:
+                text_normalized = text.replace(',', '.')
+                level = Decimal(text_normalized)
+                min_val, max_val = state_data['range']
+                if not (min_val <= float(level) <= max_val):
+                    await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
+                    return
+
+                if level not in state_data['levels']:
+                    state_data['levels'].append(level)
+                    await state.save_levels(chat_id, state_data['levels'])
+                if len(state_data['levels']) >= 100:
+                    del state.pending_commands[chat_id]
+                    await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
+                else:
+                    state_data['step'] = 'level_choice'
+                    await state.update_message(chat_id, f"Уровень {level:.6f} добавлен. Что дальше?", create_level_input_keyboard())
+            except ValueError:
+                await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
+
+    elif state_data['step'] == 'level_choice':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            state_data['step'] = 'level_input'
+            min_val, max_val = state_data['range']
+            await state.update_message(chat_id, f"Введите уровень от {min_val} до {max_val}:", create_level_input_keyboard())
+        elif text == 'Добавить еще уровень':
+            state_data['step'] = 'level_input'
+            min_val, max_val = state_data['range']
+            await state.update_message(chat_id, f"Введите следующий уровень (в пределах {min_val}–{max_val}):", create_level_input_keyboard())
+        elif text == 'Завершить':
+            await state.save_levels(chat_id, state_data['levels'])
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Уровни сохранены.", create_main_keyboard(chat_id))
+        else:
+            try:
+                text_normalized = text.replace(',', '.')
+                level = Decimal(text_normalized)
+                min_val, max_val = state_data['range']
+                if not (min_val <= float(level) <= max_val):
+                    await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
+                    return
+
+                if level not in state_data['levels']:
+                    state_data['levels'].append(level)
+                    await state.save_levels(chat_id, state_data['levels'])
+                if len(state_data['levels']) >= 100:
+                    del state.pending_commands[chat_id]
+                    await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
+                else:
+                    state_data['step'] = 'level_choice'
+                    await state.update_message(chat_id, f"Уровень {level:.6f} добавлен. Что дальше?", create_level_input_keyboard())
+            except ValueError:
+                await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
+
+    elif state_data['step'] == 'delete_level_selection':
+        if text == 'Отмена':
+            del state.pending_commands[chat_id]
+            await state.update_message(chat_id, "Удаление уровней отменено.", create_main_keyboard(chat_id))
+        elif text == 'Назад':
+            state_data['step'] = 'range_selection'
+            await state.update_message(chat_id, "Возврат к выбору действия.", create_levels_menu_keyboard())
+        elif text.startswith('Удалить '):
+            level_str = text.replace("Удалить ", "").replace(" Gwei", "")
+            try:
+                level_to_delete = Decimal(level_str)
+                if level_to_delete in state.user_states[chat_id]['current_levels']:
+                    state.user_states[chat_id]['current_levels'].remove(level_to_delete)
+                    await state.save_levels(chat_id, state.user_states[chat_id]['current_levels'])
+                    del state.pending_commands[chat_id]
+                    await state.update_message(chat_id, f"Уровень {level_to_delete:.6f} Gwei удалён.", create_main_keyboard(chat_id))
+                else:
+                    await state.update_message(chat_id, "Уровень не найден.", create_main_keyboard(chat_id))
+                    del state.pending_commands[chat_id]
+            except ValueError:
+                await state.update_message(chat_id, "Ошибка при удалении уровня.", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
+        else:
+            await state.update_message(chat_id, "Выберите уровень для удаления.", create_delete_levels_keyboard(state.user_states[chat_id]['current_levels']))
 
 async def monitor_gas_callback(gas_value):
     if state.is_first_run:
