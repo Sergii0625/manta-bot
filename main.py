@@ -1,59 +1,81 @@
-import logging
-from aiogram import Bot, Dispatcher
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-from telegram_bot import BotState, Scanner
 import os
 import asyncio
+import logging
+from aiohttp import web
+from aiogram import Bot, Dispatcher
+from aiogram.webhook.aiohttp_server import setup_application, TokenBasedRequestHandler
+
+from telegram_bot import BotState  # Твой модуль для состояния бота
+from monitoring_scanner import Scanner  # Твой модуль для сканнера
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def on_startup(app: web.Application) -> None:
+    """Инициализация при старте приложения."""
+    bot: Bot = app["bot"]
+    dispatcher: Dispatcher = app["dispatcher"]
+    webhook_secret = os.getenv("WEBHOOK_SECRET", "my-secret-token")
+
+    # Установка webhook
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+    await bot.set_webhook(
+        url=webhook_url,
+        secret_token=webhook_secret,
+        drop_pending_updates=True
+    )
+    logger.info(f"Webhook установлен: {webhook_url}")
+
+
+async def on_shutdown(app: web.Application) -> None:
+    """Очистка при остановке приложения."""
+    bot: Bot = app["bot"]
+    await bot.delete_webhook()
+    await bot.session.close()
+    logger.info("Webhook удалён, сессия закрыта")
+
+
 async def main():
-    logger.info("Starting bot initialization")
+    """Основная функция для запуска бота и сервера."""
+    # Инициализация бота
+    bot = Bot(token=os.getenv("TELEGRAM_TOKEN"))
+    dispatcher = Dispatcher()
 
-    # Инициализация Scanner и BotState
+    # Инициализация твоих модулей
+    bot_state = BotState()
     scanner = Scanner()
-    bot_state = BotState(scanner)
 
-    # Создание веб-приложения
+    # Регистрация обработчиков (предполагаю, что они в telegram_bot.py)
+    dispatcher["bot_state"] = bot_state
+    dispatcher["scanner"] = scanner
+
+    # Создание aiohttp приложения
     app = web.Application()
+    app["bot"] = bot
+    app["dispatcher"] = dispatcher
 
     # Настройка webhook
-    webhook_path = "/webhook"
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=bot_state.dp,
-        bot=bot_state.bot,
-        secret_token=os.getenv("WEBHOOK_SECRET", "my-secret-token"),
-    )
-    webhook_requests_handler.register(app, path=webhook_path)
-    setup_application(app, bot_state.dp, bot=bot_state.bot)
+    setup_application(app, dispatcher, bot=bot)
 
-    # Установка webhook при старте
-    async def on_startup():
-        webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}{webhook_path}"
-        await bot_state.bot.set_webhook(webhook_url, secret_token=os.getenv("WEBHOOK_SECRET", "my-secret-token"))
-        logger.info(f"Webhook установлен: {webhook_url}")
+    # Добавление хендлеров для проверки работоспособности
+    async def health_check(request):
+        return web.json_response({"status": "ok"})
 
-    # Удаление webhook при завершении
-    async def on_shutdown():
-        await bot_state.bot.delete_webhook()
-        await scanner.close()
-        logger.info("Webhook удалён, соединения закрыты")
+    app.router.add_get("/health", health_check)
 
-    bot_state.dp.startup.register(on_startup)
-    bot_state.dp.shutdown.register(on_shutdown)
+    # Регистрация startup/shutdown хендлеров
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
 
-    # Запуск веб-сервера
-    port = int(os.getenv("PORT", 8080))
+    # Запуск сервера
+    port = int(os.getenv("PORT", 10000))
     logger.info(f"Starting HTTP server on port {port}")
-    web.run_app(app, host="0.0.0.0", port=port)
+    return app
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Запуск приложения через aiohttp
+    app = asyncio.run(main())
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
