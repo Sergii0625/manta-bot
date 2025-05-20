@@ -4,7 +4,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
-from telegram_bot import BotState, scanner, create_main_keyboard
+from telegram_bot import BotState, scanner, create_main_keyboard, ALLOWED_USERS
 
 # Настройка логирования
 logging.basicConfig(
@@ -30,7 +30,7 @@ async def main():
     dp = Dispatcher()
 
     # Инициализация BotState
-    state = BotState(scanner)
+    state = BotState(scanner, ALLOWED_USERS)
     dp["state"] = state
 
     # Регистрация обработчиков
@@ -43,7 +43,7 @@ async def main():
             await bot.set_webhook(url=WEBHOOK_URL)
             logger.info(f"Webhook установлен: {WEBHOOK_URL}")
             await state.set_menu_button()
-            for user_id, _ in state.ALLOWED_USERS:
+            for user_id, _ in state.allowed_users:
                 await state.init_user_state(user_id)
                 state.init_user_stats(user_id)
                 await state.load_user_stats(user_id)
@@ -54,6 +54,7 @@ async def main():
     async def on_shutdown(app):
         try:
             await bot.delete_webhook()
+            await bot.session.close()  # Явно закрываем сессию бота
             logger.info("Webhook удалён")
             await scanner.close()
         except Exception as e:
