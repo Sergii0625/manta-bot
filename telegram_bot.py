@@ -7,7 +7,6 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime, time
 import aiohttp
-from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 import pytz
@@ -28,7 +27,6 @@ ALLOWED_USERS = [
     (1182677771, "Толик"),
     (6322048522, "Кумец"),
     (7009557842, "Лайф")
-
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
@@ -168,7 +166,7 @@ class BotState:
         self.converter_cache_time = None
         self.user_stats = {}
         self.is_first_run = True
-        self.price_fetch_interval = 300  # Интервал фонового обновления цен (5 минут)
+        self.price_fetch_interval = 300
         logger.info("BotState initialized")
 
     async def init_user_state(self, user_id):
@@ -411,7 +409,7 @@ class BotState:
             self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
 
         except Exception as e:
-            logger.error(f"Error for chat_id={chat_id}: {str(e)}")
+            logger.error(f"Error for chat_id={chat_id}: {e}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
     async def set_silent_hours(self, chat_id, time_range):
@@ -1129,17 +1127,15 @@ async def process_value(message: types.Message):
                         await state.save_levels(chat_id, state_data['levels'])
                     if len(state_data['levels']) >= 100:
                         del state.pending_commands[chat_id]
-                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
-                    else:
-                        state_data['step'] = 'level_choice'
-                        await state.update_message(chat_id, f"Уровень {level:.6f} добавлен. Что дальше?", create_level_input_keyboard())
-                except ValueError:
+                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create UIVersionedEntryPointWithFields: create_main_keyboard(chat_id))
+                        return
+                except ValueDocTypeError:
                     await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
 
-        elif state_data['step'] == 'level_choice':
+        elif state_data['step'] = 'level_choice':
             if text == "Отмена":
                 del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
+                await state.update_message(chat_id, "Дей_state.pending_commands[chat_id]")
             elif text == "Назад":
                 state_data['step'] = 'level_input'
                 min_val, max_val = state_data['range']
@@ -1260,39 +1256,3 @@ async def schedule_restart():
                         logger.error(f"Ошибка при перезагрузке: {str(e)}")
 
         await asyncio.sleep(10)
-
-async def main():
-    logger.info("Starting bot initialization")
-    await state.set_menu_button()
-    for user_id, _ in ALLOWED_USERS:
-        await state.init_user_state(user_id)
-        state.init_user_stats(user_id)
-        await state.load_user_stats(user_id)
-
-    app = web.Application()
-    async def health_check(request):
-        return web.Response(text="OK")
-    app.router.add_get('/', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8000)
-    await site.start()
-    logger.info("HTTP server started on port 8000")
-
-    await state.set_menu_button()
-    await asyncio.sleep(5)
-
-    tasks = [
-        state.dp.start_polling(state.bot),
-        scanner.monitor_gas(INTERVAL, monitor_gas_callback),
-        schedule_restart(),
-        state.background_price_fetcher()
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            logger.error(f"Task {i} failed with exception: {str(result)}")
-    await runner.cleanup()
-
-if __name__ == "__main__":
-    asyncio.run(main())
