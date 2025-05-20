@@ -7,6 +7,7 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime, time
 import aiohttp
+from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 import pytz
@@ -27,6 +28,7 @@ ALLOWED_USERS = [
     (1182677771, "Толик"),
     (6322048522, "Кумец"),
     (7009557842, "Лайф")
+
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
@@ -1258,3 +1260,39 @@ async def schedule_restart():
                         logger.error(f"Ошибка при перезагрузке: {str(e)}")
 
         await asyncio.sleep(10)
+
+async def main():
+    logger.info("Starting bot initialization")
+    await state.set_menu_button()
+    for user_id, _ in ALLOWED_USERS:
+        await state.init_user_state(user_id)
+        state.init_user_stats(user_id)
+        await state.load_user_stats(user_id)
+
+    app = web.Application()
+    async def health_check(request):
+        return web.Response(text="OK")
+    app.router.add_get('/', health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', 8000)
+    await site.start()
+    logger.info("HTTP server started on port 8000")
+
+    await state.set_menu_button()
+    await asyncio.sleep(5)
+
+    tasks = [
+        state.dp.start_polling(state.bot),
+        scanner.monitor_gas(INTERVAL, monitor_gas_callback),
+        schedule_restart(),
+        state.background_price_fetcher()
+    ]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"Task {i} failed with exception: {str(result)}")
+    await runner.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
