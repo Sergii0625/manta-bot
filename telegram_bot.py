@@ -1227,10 +1227,10 @@ async def schedule_restart():
 
         if current_day != last_restart_day:
             for restart_time in RESTART_TIMES:
-                restart_dt = datetime.strptime(restart_time, "%H:%M").replace(
-                    year=now.year, month=now.month, day=now.day
-                )
-                restart_time_utc = (restart_dt - kyiv_tz.utcoffset(now)).strftime("%H:%M")
+                restart_hour, restart_minute = map(int, restart_time.split(':'))
+                restart_dt = datetime(
+                    now.year, now.month, now.day, restart_hour, restart_minute, tzinfo=None
+                ).replace(tzinfo=kyiv_tz)
                 if current_time == restart_time:
                     logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
                     try:
