@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 from aiohttp import web
-from telegram_bot import state, scanner, schedule_restart, monitor_gas_callback, check_db_connection, ALLOWED_USERS
+from telegram_bot import state, scanner, schedule_restart, monitor_gas_callback
 
 # Настройка логирования
 logging.basicConfig(
@@ -45,21 +45,9 @@ async def init_bot(app):
     """Инициализация бота и установка webhook"""
     try:
         logger.info("Starting bot initialization")
-        # Проверка подключения к базе данных
-        await check_db_connection()
-        # Инициализация сессии сканнера
-        await scanner.init_session()
-        # Настройка кнопки меню
-        await state.set_menu_button()
-        # Инициализация состояний пользователей
-        for user_id, _ in ALLOWED_USERS:
-            await state.init_user_state(user_id)
-            state.init_user_stats(user_id)
-            await state.load_user_stats(user_id)
-        # Установка вебхука
+        await scanner.init_session()  # Initialize aiohttp session
         await state.bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
-        # Запуск фоновых задач
         app['background_tasks'] = await start_background_tasks()
     except Exception as e:
         logger.error(f"Error initializing bot: {str(e)}")
@@ -93,6 +81,7 @@ async def main():
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         logger.info(f"HTTP server started on port {PORT}")
+        await site.start()
         await asyncio.Event().wait()  # Держим сервер запущенным
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
