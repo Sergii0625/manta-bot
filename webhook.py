@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 from aiohttp import web
-from telegram_bot import state, scanner, schedule_restart
+from telegram_bot import state, scanner, schedule_restart, monitor_gas_callback
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,7 +33,7 @@ async def start_background_tasks():
         tasks = [
             asyncio.create_task(state.background_price_fetcher()),
             asyncio.create_task(schedule_restart()),
-            asyncio.create_task(scanner.start_monitoring(state))
+            asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback))  # Исправлено: используем monitor_gas с interval=60 и callback
         ]
         logger.info("Background tasks started")
         return tasks
