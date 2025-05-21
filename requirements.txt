@@ -1,6 +1,6 @@
-aiohttp==3.10.10  # Асинхронные HTTP-запросы для API и RPC
-aiogram==3.13.1   # Фреймворк для Telegram-бота
-web3==7.3.0       # Взаимодействие с Manta Pacific RPC
-asyncpg==0.30.0   # Асинхронный драйвер для PostgreSQL
-pytz==2024.2      # Работа с часовыми поясами
-python-dotenv==1.0.1  # Загрузка переменных окружения из .env
+aiohttp==3.10.10
+aiogram==3.13.1
+web3==7.3.0
+asyncpg==0.30.0
+pytz==2024.2
+python-dotenv==1.0.1
