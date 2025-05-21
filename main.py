@@ -1,4 +1,4 @@
-from telegram_bot import main
+from webhook import main
 import asyncio
 
 if __name__ == "__main__":
