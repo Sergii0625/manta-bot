@@ -1246,6 +1246,7 @@ async def schedule_restart():
                         state.converter_cache_time = None
                         logger.info("Кэши очищены")
                         scanner = Scanner()
+                        await scanner.init_session()  # Initialize aiohttp session
                         state = BotState(scanner)
                         logger.info("Новые экземпляры Scanner и BotState созданы")
                         for user_id, _ in ALLOWED_USERS:

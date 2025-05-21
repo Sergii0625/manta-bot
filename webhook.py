@@ -33,7 +33,7 @@ async def start_background_tasks():
         tasks = [
             asyncio.create_task(state.background_price_fetcher()),
             asyncio.create_task(schedule_restart()),
-            asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback))  # Исправлено: используем monitor_gas с interval=60 и callback
+            asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback))
         ]
         logger.info("Background tasks started")
         return tasks
@@ -45,6 +45,7 @@ async def init_bot(app):
     """Инициализация бота и установка webhook"""
     try:
         logger.info("Starting bot initialization")
+        await scanner.init_session()  # Initialize aiohttp session
         await state.bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
         app['background_tasks'] = await start_background_tasks()

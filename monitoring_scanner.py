@@ -22,11 +22,19 @@ COINGECKO_API_URL_ALL = "https://api.coingecko.com/api/v3/coins/manta-network?lo
 class Scanner:
     def __init__(self):
         self.web3 = AsyncWeb3(AsyncHTTPProvider(RPC_URL))
-        self.session = aiohttp.ClientSession()  # Создаём общую сессию
+        self.session = None  # Session will be initialized asynchronously
         self.last_price_data = None
         self.last_price_time = None
         self.price_cooldown = 10  # Секунд между запросами цены
         logger.info("Scanner initialized with AsyncWeb3")
+
+    async def init_session(self):
+        """Initialize aiohttp ClientSession asynchronously"""
+        if self.session is None or self.session.closed:
+            self.session = aiohttp.ClientSession()
+            logger.info("AIOHTTP session initialized")
+        else:
+            logger.debug("AIOHTTP session already initialized")
 
     async def get_current_gas(self):
         """Получение текущего значения газа через fee_history"""
@@ -50,6 +58,9 @@ class Scanner:
 
     async def get_manta_price_and_changes(self):
         """Получение текущей цены MANTA/USDT и изменений"""
+        if self.session is None:
+            logger.error("AIOHTTP session not initialized")
+            return None, None, None, None, None, None, None
         try:
             async with self.session.get(BINANCE_API_URL) as binance_resp:
                 if binance_resp.status != 200:
@@ -97,6 +108,9 @@ class Scanner:
 
     async def get_price(self, ticker):
         """Получение текущей цены токена по тикеру через Binance API"""
+        if self.session is None:
+            logger.error("AIOHTTP session not initialized")
+            return None
         try:
             url = f"https://api.binance.com/api/v3/ticker/24hr?symbol={ticker}"
             async with self.session.get(url) as resp:
@@ -113,6 +127,9 @@ class Scanner:
 
     async def get_price_and_changes(self, ticker):
         """Получение цены и изменений для любого токена"""
+        if self.session is None:
+            logger.error("AIOHTTP session not initialized")
+            return None, None, None, None, None
         try:
             # Маппинг тикеров на ID CoinGecko
             coingecko_ids = {
@@ -168,6 +185,9 @@ class Scanner:
 
     async def get_manta_spot_volume(self):
         """Получение 24-часового объема торгов MANTA/USDT на споте"""
+        if self.session is None:
+            logger.error("AIOHTTP session not initialized")
+            return None
         try:
             async with self.session.get(BINANCE_API_URL) as resp:
                 if resp.status != 200:
@@ -183,6 +203,9 @@ class Scanner:
 
     async def get_manta_futures_volume(self):
         """Получение 24-часового объема торгов MANTA/USDT на фьючерсах"""
+        if self.session is None:
+            logger.error("AIOHTTP session not initialized")
+            return None
         try:
             async with self.session.get(BINANCE_FUTURES_API_URL) as resp:
                 if resp.status != 200:
@@ -198,6 +221,8 @@ class Scanner:
 
     async def monitor_gas(self, interval, callback):
         """Мониторинг газа с вызовом callback для передачи данных"""
+        if self.session is None:
+            await self.init_session()  # Ensure session is initialized
         while True:
             logger.info("Starting gas value check...")
             gas_value = await self.get_current_gas()
@@ -211,7 +236,7 @@ class Scanner:
             if hasattr(self.web3.provider, 'session') and self.web3.provider.session is not None:
                 await self.web3.provider.session.close()
                 logger.info("Web3 session closed")
-            if not self.session.closed:
+            if self.session is not None and not self.session.closed:
                 await self.session.close()
                 logger.info("AIOHTTP session closed")
         except Exception as e:
