@@ -920,7 +920,7 @@ def create_gas_calculator_keyboard():
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def create_levels_menu_keyboard interplay(0):
+def create_levels_menu_keyboard():
     keyboard = [
         [types.KeyboardButton(text="0.00001–0.01")],
         [types.KeyboardButton(text="Удалить уровни")],
