@@ -34,6 +34,15 @@ CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
 RESTART_TIMES = ["21:00"]
 
+# Проверка подключения к базе данных при старте
+async def check_db_connection():
+    try:
+        conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
+        await conn.close()
+        logger.info("Database connection successful")
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {str(e)}")
+
 # Функции для работы с PostgreSQL
 async def init_db():
     conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
@@ -104,7 +113,7 @@ async def load_levels(user_id):
     if result and result['levels']:
         levels = json.loads(result['levels'])
         if not levels:
-            logger.debug(f"Empty levels list in DB for user_id={user_id}")
+            logger.warning(f"Empty levels list in DB for user_id={user_id}")
             return None
         loaded_levels = [Decimal(level) for level in levels]
         logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
@@ -181,6 +190,10 @@ class BotState:
                 'silent_hours': (None, None)
             }
             await self.load_or_set_default_levels(user_id)
+            # Проверка, что current_levels не пустой
+            if not self.user_states[user_id]['current_levels']:
+                logger.warning(f"current_levels is empty for user_id={user_id} after load_or_set_default_levels, forcing default levels")
+                await self.load_or_set_default_levels(user_id)
             start_time, end_time = await load_silent_hours(user_id)
             self.user_states[user_id]['silent_hours'] = (start_time, end_time)
             logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}, silent_hours={self.user_states[user_id]['silent_hours']}")
@@ -227,7 +240,8 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         try:
             levels = await load_levels(user_id)
-            if levels is None:
+            logger.debug(f"Loaded levels from DB for user_id={user_id}: {levels}")
+            if levels is None or not levels:
                 levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
                     Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
@@ -238,8 +252,11 @@ class BotState:
                     Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
                     Decimal('0.000050')
                 ]
-                await save_levels(user_id, levels)
-                logger.info(f"Set default levels for user_id={user_id}: {levels}")
+                try:
+                    await save_levels(user_id, levels)
+                    logger.info(f"Set default levels for user_id={user_id}: {levels}")
+                except Exception as e:
+                    logger.error(f"Failed to save default levels for user_id={user_id}: {str(e)}")
             self.user_states[user_id]['current_levels'] = levels
             self.user_states[user_id]['current_levels'].sort(reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
@@ -256,8 +273,11 @@ class BotState:
                 Decimal('0.000050')
             ]
             self.user_states[user_id]['current_levels'] = levels
-            await save_levels(user_id, self.user_states[user_id]['current_levels'])
-            logger.info(f"Set default levels due to error for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
+            try:
+                await save_levels(user_id, levels)
+                logger.info(f"Set default levels due to error for user_id={user_id}: {levels}")
+            except Exception as e:
+                logger.error(f"Failed to save default levels after error for user_id={user_id}: {str(e)}")
 
     async def save_levels(self, user_id, levels):
         levels.sort(reverse=True)
@@ -377,6 +397,7 @@ class BotState:
             self.user_states[chat_id]['last_measured_gas'] = current_slow
             prev_level = self.user_states[chat_id]['prev_level']
             levels = self.user_states[chat_id]['current_levels']
+            logger.debug(f"Checking gas for chat_id={chat_id}: current_levels={levels}, prev_level={prev_level}")
 
             if not levels:
                 await self.load_or_set_default_levels(chat_id)
@@ -1253,6 +1274,7 @@ async def schedule_restart():
                             await state.init_user_state(user_id)
                             state.init_user_stats(user_id)
                             await state.load_user_stats(user_id)
+                            logger.debug(f"Restored user_id={user_id}, current_levels={state.user_states[user_id]['current_levels']}")
                         logger.info("Пользовательские данные восстановлены")
                         await state.set_menu_button()
                         state.is_first_run = True
