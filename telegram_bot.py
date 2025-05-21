@@ -1127,15 +1127,17 @@ async def process_value(message: types.Message):
                         await state.save_levels(chat_id, state_data['levels'])
                     if len(state_data['levels']) >= 100:
                         del state.pending_commands[chat_id]
-                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create UIVersionedEntryPointWithFields: create_main_keyboard(chat_id))
-                        return
-                except ValueDocTypeError:
+                        await state.update_message(chat_id, "Достигнут лимит в 100 уровней. Уровни сохранены.", create_main_keyboard(chat_id))
+                    else:
+                        state_data['step'] = 'level_choice'
+                        await state.update_message(chat_id, f"Уровень {level:.6f} добавлен. Что дальше?", create_level_input_keyboard())
+                except ValueError:
                     await state.update_message(chat_id, "Ошибка: введите корректное число (используйте точку или запятую)", create_level_input_keyboard())
 
-        elif state_data['step'] = 'level_choice':
+        elif state_data['step'] == 'level_choice':
             if text == "Отмена":
                 del state.pending_commands[chat_id]
-                await state.update_message(chat_id, "Дей_state.pending_commands[chat_id]")
+                await state.update_message(chat_id, "Действие отменено.", create_main_keyboard(chat_id))
             elif text == "Назад":
                 state_data['step'] = 'level_input'
                 min_val, max_val = state_data['range']
@@ -1225,7 +1227,10 @@ async def schedule_restart():
 
         if current_day != last_restart_day:
             for restart_time in RESTART_TIMES:
-                restart_time_utc = (datetime.strptime(restart_time, "%H:%M") - kyiv_tz.utcoffset(now)).strftime("%H:%M")
+                restart_dt = datetime.strptime(restart_time, "%H:%M").replace(
+                    year=now.year, month=now.month, day=now.day
+                )
+                restart_time_utc = (restart_dt - kyiv_tz.utcoffset(now)).strftime("%H:%M")
                 if current_time == restart_time:
                     logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
                     try:
