@@ -1,3 +1,4 @@
+```python
 import asyncio
 import logging
 import os
@@ -456,7 +457,11 @@ class BotState:
 def create_keyboard(chat_id, keyboard_type):
     """Создание клавиатуры по типу."""
     keyboards = {
-        'main': [[types.KeyboardButton(text="Газ"), types.KeyboardButton(text="Меню")]] + ([[types.KeyboardButton(text="Админ")]] if chat_id == ADMIN_ID else []),
+        'main': (
+            [[types.KeyboardButton(text="Газ")], [types.KeyboardButton(text="Админ"), types.KeyboardButton(text="Меню")]]
+            if chat_id == ADMIN_ID else
+            [[types.KeyboardButton(text="Газ"), types.KeyboardButton(text="Меню")]]
+        ),
         'menu': [
             [types.KeyboardButton(text="Manta Конвертер"), types.KeyboardButton(text="Газ Калькулятор")],
             [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
@@ -617,3 +622,4 @@ async def monitor_gas_callback(gas_value):
     for user_id, _ in ALLOWED_USERS:
         await asyncio.sleep(1)
         await state.get_manta_gas(user_id, force_base_message=False)
+```
