@@ -392,8 +392,10 @@ class BotState:
 
     async def get_manta_gas(self, chat_id, force_base_message=False):
         try:
+            logger.debug(f"get_manta_gas called for chat_id={chat_id}, force_base_message={force_base_message}")
             current_slow = await self.scanner.get_current_gas()
             if current_slow is None:
+                logger.error(f"Failed to fetch gas price for chat_id={chat_id}")
                 await self.update_message(chat_id, "<b>⚠️ Не удалось подключиться к Manta Pacific</b>", create_main_keyboard(chat_id))
                 return
 
@@ -421,33 +423,40 @@ class BotState:
                 logger.debug(f"After reload, current_levels for chat_id={chat_id}: {levels}")
 
             if not levels:
+                logger.info(f"No levels set for chat_id={chat_id}, skipping notification check")
                 if force_base_message:
                     await self.update_message(chat_id, base_message + "\n\nУровни не заданы. Используйте 'Задать Уровни'.", create_main_keyboard(chat_id))
-                else:
-                    logger.info(f"No levels set for chat_id={chat_id}, skipping notification check.")
                 self.user_states[chat_id]['prev_level'] = current_slow
                 return
 
             if prev_level is None or force_base_message:
+                logger.debug(f"Initial or forced message for chat_id={chat_id}, prev_level={prev_level}")
                 await self.update_message(chat_id, base_message, create_main_keyboard(chat_id))
                 self.user_states[chat_id]['prev_level'] = current_slow
             else:
                 kyiv_tz = pytz.timezone('Europe/Kyiv')
                 now_kyiv = datetime.now(kyiv_tz)
-                if not is_silent_hour(chat_id, now_kyiv):
-                    sorted_levels = sorted(levels)
-                    closest_level = min(sorted_levels, key=lambda x: abs(x - current_slow))
-                    if prev_level < closest_level <= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
-                        logger.info(f"Detected upward crossing for chat_id={chat_id}: {closest_level:.6f}")
-                        asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', closest_level))
-                    elif prev_level > closest_level >= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
-                        logger.info(f"Detected downward crossing for chat_id={chat_id}: {closest_level:.6f}")
-                        asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', closest_level))
+                if is_silent_hour(chat_id, now_kyiv):
+                    logger.info(f"Silent hours active for chat_id={chat_id}, skipping notification check")
+                    self.user_states[chat_id]['prev_level'] = current_slow
+                    return
+
+                sorted_levels = sorted(levels)
+                closest_level = min(sorted_levels, key=lambda x: abs(x - current_slow))
+                logger.debug(f"Checking level crossing for chat_id={chat_id}: current={current_slow:.6f}, prev={prev_level:.6f}, closest_level={closest_level:.6f}")
+                if prev_level < closest_level <= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
+                    logger.info(f"Detected upward crossing for chat_id={chat_id}: {closest_level:.6f}")
+                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', closest_level))
+                elif prev_level > closest_level >= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
+                    logger.info(f"Detected downward crossing for chat_id={chat_id}: {closest_level:.6f}")
+                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', closest_level))
 
             self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
+            self.user_states[chat_id]['prev_level'] = current_slow
+            logger.debug(f"Updated state for chat_id={chat_id}: active_level={self.user_states[chat_id]['active_level']:.6f}, prev_level={current_slow:.6f}")
 
         except Exception as e:
-            logger.error(f"Error for chat_id={chat_id}: {e}")
+            logger.error(f"Error in get_manta_gas for chat_id={chat_id}: {e}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
     async def set_silent_hours(self, chat_id, time_range):
@@ -1239,20 +1248,25 @@ async def process_value(message: types.Message):
         logger.error(f"Failed to delete user message_id={message.message_id}: {e}")
 
 async def monitor_gas_callback(gas_value):
+    logger.debug(f"monitor_gas_callback started with gas_value={gas_value:.6f}")
     if state.is_first_run:
         for user_id, _ in ALLOWED_USERS:
             state.user_states[user_id]['last_measured_gas'] = gas_value
             state.user_states[user_id]['prev_level'] = gas_value
             logger.info(f"First run: Set initial gas value for user_id={user_id}: {gas_value:.6f}")
         state.is_first_run = False
+        logger.debug("monitor_gas_callback completed first run")
         return
 
     for user_id, _ in ALLOWED_USERS:
         try:
             await asyncio.sleep(1)
+            logger.debug(f"Calling get_manta_gas for user_id={user_id}")
             await state.get_manta_gas(user_id)
+            logger.debug(f"get_manta_gas completed for user_id={user_id}")
         except Exception as e:
-            logger.error(f"Unexpected error for user {user_id}: {str(e)}")
+            logger.error(f"Unexpected error in monitor_gas_callback for user_id={user_id}: {str(e)}")
+    logger.debug("monitor_gas_callback completed")
 
 async def schedule_restart():
     global scanner, state
