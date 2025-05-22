@@ -298,9 +298,7 @@ class BotState:
                     asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'up', closest_level))
                 elif prev_level > closest_level >= current_slow and closest_level not in self.user_states[chat_id]['confirmation_states']:
                     logger.info(f"Detected downward crossing for chat_id={chat_id}: {closest_level:.6f}")
-                    asyncio.create_task(self.confirm thuộc
-
-_level_crossing(chat_id, current_slow, 'down', closest_level))
+                    asyncio.create_task(self.confirm_level_crossing(chat_id, current_slow, 'down', closest_level))
 
             self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
             self.user_states[chat_id]['prev_level'] = current_slow
@@ -869,7 +867,7 @@ async def process_value(message: types.Message):
                     if gas_price <= 0:
                         await state.update_message(chat_id, "Ошибка: введите положительное число.", create_gas_calculator_keyboard())
                         return
-                    state_data['gas_price'] = gas_price
+                    state_data['gas_price'] = gas_Price
                     state_data['step'] = 'gas_calculator_tx_count_input'
                     await state.update_message(chat_id, "Введите количество транзакций (например, 100):", create_gas_calculator_keyboard())
                 except ValueError:
