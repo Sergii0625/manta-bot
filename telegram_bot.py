@@ -1135,50 +1135,9 @@ async def monitor_gas_callback(gas_value):
     for user_id, _ in ALLOWED_USERS:
         try:
             await asyncio.sleep(1)
-            logger.debug(f"Calling get_manta_gas for user_id={user_id}")
-            await state.get_manta_gas(user_id)
+            logger.debug(f"Calling get_manta_gas for user_id={user_id} with force_base_message=False")
+            await state.get_manta_gas(user_id, force_base_message=False)
             logger.debug(f"get_manta_gas completed for user_id={user_id}")
         except Exception as e:
             logger.error(f"Unexpected error in monitor_gas_callback for user_id={user_id}: {str(e)}")
     logger.debug("monitor_gas_callback completed")
-
-async def schedule_restart():
-    global scanner, state
-    last_restart_day = None
-    kyiv_tz = pytz.timezone('Europe/Kyiv')
-    while True:
-        now = datetime.now(kyiv_tz)
-        current_time = now.strftime("%H:%M")
-        current_day = now.date()
-        if current_day != last_restart_day:
-            for restart_time in RESTART_TIMES:
-                restart_hour, restart_minute = map(int, restart_time.split(':'))
-                restart_dt = datetime(
-                    now.year, now.month, now.day, restart_hour, restart_minute, tzinfo=None
-                ).replace(tzinfo=kyiv_tz)
-                if current_time == restart_time:
-                    logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
-                    try:
-                        await scanner.close()
-                        state.l2_data_cache = None
-                        state.l2_data_time = None
-                        state.fear_greed_cache = None
-                        state.fear_greed_time = None
-                        state.converter_cache = None
-                        state.converter_cache_time = None
-                        logger.info("Кэши очищены")
-                        scanner = Scanner()
-                        await scanner.init_session()
-                        state = BotState(scanner)
-                        for user_id, _ in ALLOWED_USERS:
-                            await state.init_user_state(user_id)
-                            state.init_user_stats(user_id)
-                            logger.info(f"Restored user data for user_id={user_id}, current_levels={state.user_states[user_id]['current_levels']}")
-                        logger.info("Пользовательские данные восстановлены")
-                        await state.set_menu_button()
-                        state.is_first_run = True
-                        logger.info(f"Перезагрузка завершена в {restart_time} по киевскому времени")
-                        last_restart_day = current_day
-                    except Exception as e:
-                        logger.error(f"Ошибка при перезагрузке: {str(e)}")
-        await asyncio.sleep(10)
