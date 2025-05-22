@@ -501,7 +501,11 @@ async def handle_main_button(message: types.Message):
         "Manta Price": lambda: state.get_manta_price(chat_id),
         "Сравнение L2": lambda: state.get_l2_comparison(chat_id),
         "Страх и Жадность": lambda: state.get_fear_greed(chat_id),
-        "Уведомления": lambda: state.update_message(chat_id, f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{'\n'.join(f'◆ {level:.6f} Gwei' for level in state.user_states[chat_id]['current_levels']) or 'Уровни не установлены.'}</pre></b>", create_keyboard(chat_id, 'main')),
+        "Уведомления": lambda: state.update_message(
+            chat_id,
+            f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{''.join(f'◆ {level:.6f} Gwei\n' for level in state.user_states[chat_id]['current_levels']) if state.user_states[chat_id]['current_levels'] else 'Уровни не установлены.'}</pre></b>",
+            create_keyboard(chat_id, 'main')
+        ),
         "Админ": lambda: state.get_admin_stats(chat_id),
         "Тихие Часы": lambda: state.update_message(chat_id, f"Тихие Часы {'включены' if state.user_states[chat_id]['silent_enabled'] else 'отключены'}: 00:00–08:00", create_keyboard(chat_id, 'silent_hours')),
         "Manta Конвертер": lambda: state.update_message(chat_id, "Введите количество MANTA для конвертации:", create_keyboard(chat_id, 'converter')),
