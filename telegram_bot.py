@@ -728,14 +728,21 @@ class BotState:
 
     async def get_admin_stats(self, chat_id):
         if chat_id != ADMIN_ID:
+            logger.warning(f"Unauthorized access to admin stats by chat_id={chat_id}")
             return
         today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
+        # Инициализируем статистику для всех пользователей
+        for user_id, _ in ALLOWED_USERS:
+            if user_id not in self.user_stats:
+                self.init_user_stats(user_id)
+                logger.debug(f"Initialized user_stats for user_id={user_id} in get_admin_stats")
         message = "<b>Статистика использования бота за сегодня:</b>\n\n<pre>"
         has_activity = False
         for user_id, user_name in ALLOWED_USERS:
             if user_id == ADMIN_ID:
                 continue
             stats = self.user_stats[user_id].get(today, {})
+            logger.debug(f"Accessing stats for user_id={user_id}, stats={stats}")
             if any(stats.values()):
                 message += f"{user_id} {user_name}\n"
                 for action, count in stats.items():
@@ -1153,7 +1160,6 @@ async def schedule_restart():
                         scanner = Scanner()
                         await scanner.init_session()
                         state = BotState(scanner)
-                        logger.info("Новые экземпляры Scanner и BotState созданы")
                         for user_id, _ in ALLOWED_USERS:
                             await state.init_user_state(user_id)
                             state.init_user_stats(user_id)
