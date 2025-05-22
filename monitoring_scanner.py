@@ -221,7 +221,6 @@ class Scanner:
 
     async def monitor_gas(self, interval, callback):
         """Мониторинг газа с вызовом callback для передачи данных"""
-        logger.debug(f"monitor_gas started with interval={interval}")
         if self.session is None:
             await self.init_session()  # Ensure session is initialized
         while True:

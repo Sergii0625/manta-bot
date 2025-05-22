@@ -33,7 +33,7 @@ async def start_background_tasks():
         tasks = [
             asyncio.create_task(state.background_price_fetcher()),
             asyncio.create_task(schedule_restart()),
-            asyncio.create_task(scanner.start_monitoring(monitor_gas_callback, 60))
+            asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback))
         ]
         logger.info("Background tasks started")
         return tasks
@@ -45,6 +45,10 @@ async def init_bot(app):
     """Инициализация бота и установка webhook"""
     try:
         logger.info("Starting bot initialization")
+        # Проверка подключения к базе данных
+        if not await state.check_db_connection():
+            logger.error("Cannot proceed with bot initialization due to database connection failure")
+            raise Exception("Database connection failed")
         await scanner.init_session()  # Initialize aiohttp session
         await state.bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
