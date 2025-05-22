@@ -224,22 +224,11 @@ class Scanner:
         if self.session is None:
             await self.init_session()  # Ensure session is initialized
         while True:
-            try:
-                logger.debug(f"Starting gas monitoring iteration, interval={interval} seconds")
-                gas_value = await self.get_current_gas()
-                if gas_value is not None:
-                    logger.debug(f"Gas value retrieved: {gas_value:.6f} Gwei, calling callback")
-                    await callback(gas_value)
-                else:
-                    logger.warning("Failed to retrieve gas value, skipping callback")
-                logger.debug(f"Gas monitoring iteration completed, sleeping for {interval} seconds")
-                await asyncio.sleep(interval)
-            except asyncio.CancelledError:
-                logger.info("Gas monitoring task cancelled")
-                break
-            except Exception as e:
-                logger.error(f"Error in gas monitoring loop: {str(e)}")
-                await asyncio.sleep(interval)  # Continue loop even on error to prevent task termination
+            logger.info("Starting gas value check...")
+            gas_value = await self.get_current_gas()
+            if gas_value is not None:
+                await callback(gas_value)
+            await asyncio.sleep(interval)
 
     async def close(self):
         """Закрытие соединений"""
