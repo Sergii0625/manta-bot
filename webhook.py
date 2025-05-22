@@ -1,6 +1,8 @@
 import os
 import logging
 import asyncio
+import pytz
+from datetime import datetime
 from aiohttp import web
 from telegram_bot import state, scanner
 
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 # Получение переменных окружения
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"https://manta-bot.onrender.com{WEBHOOK_PATH}"
-PORT = int(os.getenv("PORT", 8000))  # Используем PORT из Render или 8000 по умолчанию
+PORT = int(os.getenv("PORT", 10000))  # Используем PORT из Render или 10000 по умолчанию
 
 async def health_check(request):
     """Обработчик для проверки работоспособности"""
@@ -76,7 +78,7 @@ async def init_bot(app):
         if not await state.check_db_connection():
             logger.error("Cannot proceed with bot initialization due to database connection failure")
             raise Exception("Database connection failed")
-        await scanner.init_session()  # Initialize aiohttp session
+        await scanner.init_session()  # Инициализация сессии aiohttp
         await state.bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
         app['background_tasks'] = await start_background_tasks()
@@ -100,8 +102,8 @@ async def cleanup(app):
 def create_app():
     """Создание приложения aiohttp"""
     app = web.Application()
-    app.router.add_get('/health', health_check)  # Добавляем маршрут для проверки работоспособности
-    app.router.add_post(WEBHOOK_PATH, webhook)
+    app.router.add_get('/health', health_check)  # Маршрут для проверки работоспособности
+    app.router.add_post(WEBHOOK_PATH, webhook)  # Маршрут для Telegram webhook
     app.on_startup.append(init_bot)
     app.on_cleanup.append(cleanup)
     return app
@@ -113,8 +115,8 @@ async def main():
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
-        logger.info(f"HTTP server started on port {PORT}")
         await site.start()  # Явно запускаем сайт
+        logger.info(f"HTTP server started on port {PORT}")
         await asyncio.Event().wait()  # Держим сервер запущенным
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
