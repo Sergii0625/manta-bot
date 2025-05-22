@@ -16,6 +16,10 @@ WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"https://manta-bot.onrender.com{WEBHOOK_PATH}"
 PORT = int(os.getenv("PORT", 8000))  # Используем PORT из Render или 8000 по умолчанию
 
+async def health_check(request):
+    """Обработчик для проверки работоспособности"""
+    return web.json_response({'status': 'ok'})
+
 async def webhook(request):
     """Обработка входящих обновлений от Telegram"""
     try:
@@ -96,6 +100,7 @@ async def cleanup(app):
 def create_app():
     """Создание приложения aiohttp"""
     app = web.Application()
+    app.router.add_get('/health', health_check)  # Добавляем маршрут для проверки работоспособности
     app.router.add_post(WEBHOOK_PATH, webhook)
     app.on_startup.append(init_bot)
     app.on_cleanup.append(cleanup)
@@ -109,6 +114,7 @@ async def main():
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         logger.info(f"HTTP server started on port {PORT}")
+        await site.start()  # Явно запускаем сайт
         await asyncio.Event().wait()  # Держим сервер запущенным
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
