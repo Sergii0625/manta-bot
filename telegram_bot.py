@@ -107,7 +107,7 @@ class BotState:
             logger.warning(f"Access denied for chat_id={chat_id}")
             return False
         await self.init_user_state(chat_id)
-        self.init_user_stats(chat_id)
+        self.init_user_stats(cls, chat_id)
         return True
 
     async def update_message(self, chat_id, text, reply_markup=None):
@@ -444,16 +444,20 @@ class BotState:
             await self.update_message(chat_id, "Доступ только для админа.", create_keyboard(chat_id, 'main'))
             return
         today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
-        message = "<b>Статистика использования бота за сегодня:</b>\n\n<pre>"
+        message = "<b>Статистика использования бота за сегодня:</b>\n\n"
         has_activity = False
+        stats_message = ""
         for user_id, user_name in ALLOWED_USERS:
             if user_id == ADMIN_ID:
                 continue
             stats = self.user_stats.get(user_id, {}).get(today, {})
             if any(stats.values()):
-                message += f"{user_id} {user_name}\n" + "\n".join(f"{k} - {v}" for k, v in stats.items() if v > 0) + "\n\n"
+                stats_message += f"{user_id} {user_name}\n" + "\n".join(f"{k} - {v}" for k, v in stats.items() if v > 0) + "\n\n"
                 has_activity = True
-        message += "</pre>" if has_activity else "Сегодня никто из пользователей (кроме админа) не использовал бота."
+        if has_activity:
+            message += f"<pre>{stats_message}</pre>"
+        else:
+            message += "Сегодня никто из пользователей (кроме админа) не использовал бота."
         await self.update_message(chat_id, message, create_keyboard(chat_id, 'main'))
 
 def create_keyboard(chat_id, keyboard_type):
@@ -585,15 +589,15 @@ async def process_value(message: types.Message):
                     raise ValueError
                 state_data['gas_price'] = gas_price
                 state_data['step'] = 'gas_calculator_tx_count_input'
-                await state.update_message(chat_id, "Введите количество транзакций (например, 100):", create_keyboard(chat_id, 'gas_calculator'))
+                await self.update_message(chat_id, "Введите количество транзакций (например, 100):", create_keyboard(chat_id, 'gas_calculator'))
             else:
                 tx_count = int(text)
                 if tx_count <= 0:
                     raise ValueError
-                await state.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
+                await self.calculate_gas_cost(chat_id, state_data['gas_price'], tx_count)
                 del state.pending_commands[chat_id]
         except ValueError:
-            await state.update_message(chat_id, f"Ошибка: введите {'положительное число' if state_data['step'] == 'gas_calculator_gas_input' else 'целое число'}.", create_keyboard(chat_id, 'gas_calculator'))
+            await self.update_message(chat_id, f"Ошибка: введите {'положительное число' if state_data['step'] == 'gas_calculator_gas_input' else 'целое число'}.", create_keyboard(chat_id, 'gas_calculator'))
 
     async def handle_silent_hours_input(chat_id, text):
         if text in ["Отмена", "Назад"]:
