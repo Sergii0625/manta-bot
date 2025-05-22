@@ -7,7 +7,6 @@ from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime, time
 import aiohttp
-from aiohttp import web
 from monitoring_scanner import Scanner
 import asyncpg
 import pytz
@@ -28,7 +27,7 @@ ALLOWED_USERS = [
     (1182677771, "Толик"),
     (6322048522, "Кумец"),
     (1725998320, "Света"),
-    (7009557842, "Мой лайф")
+    (7009557842, "Лайф")
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
@@ -38,23 +37,28 @@ RESTART_TIMES = ["21:00"]
 
 # Функции для работы с PostgreSQL
 async def init_db():
-    conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_levels (
-            user_id BIGINT PRIMARY KEY,
-            levels TEXT
-        );
-        CREATE TABLE IF NOT EXISTS user_stats (
-            user_id BIGINT PRIMARY KEY,
-            stats TEXT
-        );
-        CREATE TABLE IF NOT EXISTS silent_hours (
-            user_id BIGINT PRIMARY KEY,
-            start_time TIME,
-            end_time TIME
-        );
-    """)
-    return conn
+    try:
+        conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_levels (
+                user_id BIGINT PRIMARY KEY,
+                levels TEXT
+            );
+            CREATE TABLE IF NOT EXISTS user_stats (
+                user_id BIGINT PRIMARY KEY,
+                stats TEXT
+            );
+            CREATE TABLE IF NOT EXISTS silent_hours (
+                user_id BIGINT PRIMARY KEY,
+                start_time TIME,
+                end_time TIME
+            );
+        """)
+        logger.info("Database initialized successfully")
+        return conn
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {str(e)}")
+        raise
 
 async def save_silent_hours(user_id, start_time, end_time):
     conn = await init_db()
@@ -85,34 +89,42 @@ async def load_silent_hours(user_id):
 async def save_levels(user_id, levels):
     conn = await init_db()
     levels_str = json.dumps([str(level) for level in levels])
-    await conn.execute(
-        """
-        INSERT INTO user_levels (user_id, levels)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id) DO UPDATE SET levels = $2
-        """,
-        user_id, levels_str
-    )
-    await conn.close()
-    logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
+    try:
+        await conn.execute(
+            """
+            INSERT INTO user_levels (user_id, levels)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO UPDATE SET levels = $2
+            """,
+            user_id, levels_str
+        )
+        logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
+    except Exception as e:
+        logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
+    finally:
+        await conn.close()
 
 async def load_levels(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT levels FROM user_levels WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result and result['levels']:
-        levels = json.loads(result['levels'])
-        if not levels:
-            logger.debug(f"Empty levels list in DB for user_id={user_id}")
-            return None
-        loaded_levels = [Decimal(level) for level in levels]
-        logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
-        return loaded_levels
-    logger.debug(f"No levels found in DB for user_id={user_id}")
-    return None
+    try:
+        conn = await init_db()
+        result = await conn.fetchrow(
+            "SELECT levels FROM user_levels WHERE user_id = $1",
+            user_id
+        )
+        await conn.close()
+        if result and result['levels']:
+            levels = json.loads(result['levels'])
+            if not levels:
+                logger.warning(f"Empty levels list in DB for user_id={user_id}")
+                return None
+            loaded_levels = [Decimal(level) for level in levels]
+            logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
+            return loaded_levels
+        logger.warning(f"No levels found in DB for user_id={user_id}")
+        return None
+    except Exception as e:
+        logger.error(f"Error loading levels for user_id={user_id}: {str(e)}")
+        return None
 
 async def save_stats(user_id, stats):
     conn = await init_db()
@@ -168,8 +180,19 @@ class BotState:
         self.converter_cache_time = None
         self.user_stats = {}
         self.is_first_run = True
-        self.price_fetch_interval = 300  # Интервал фонового обновления цен (5 минут)
+        self.price_fetch_interval = 300
         logger.info("BotState initialized")
+
+    async def check_db_connection(self):
+        """Проверка целостности подключения к базе данных при старте"""
+        try:
+            conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
+            await conn.close()
+            logger.info("Database connection test successful")
+            return True
+        except Exception as e:
+            logger.error(f"Database connection test failed: {str(e)}")
+            return False
 
     async def init_user_state(self, user_id):
         if user_id not in self.user_states:
@@ -183,6 +206,9 @@ class BotState:
                 'silent_hours': (None, None)
             }
             await self.load_or_set_default_levels(user_id)
+            if not self.user_states[user_id]['current_levels']:
+                logger.warning(f"current_levels is empty for user_id={user_id} after load_or_set_default_levels, forcing default levels")
+                await self.load_or_set_default_levels(user_id)  # Повторная попытка
             start_time, end_time = await load_silent_hours(user_id)
             self.user_states[user_id]['silent_hours'] = (start_time, end_time)
             logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}, silent_hours={self.user_states[user_id]['silent_hours']}")
@@ -229,7 +255,8 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         try:
             levels = await load_levels(user_id)
-            if levels is None:
+            if levels is None or not levels:
+                logger.warning(f"No levels or empty levels for user_id={user_id}, setting default levels")
                 levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
                     Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
@@ -240,8 +267,11 @@ class BotState:
                     Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
                     Decimal('0.000050')
                 ]
-                await save_levels(user_id, levels)
-                logger.info(f"Set default levels for user_id={user_id}: {levels}")
+                try:
+                    await save_levels(user_id, levels)
+                    logger.info(f"Default levels saved to DB for user_id={user_id}: {levels}")
+                except Exception as e:
+                    logger.error(f"Failed to save default levels for user_id={user_id}: {str(e)}")
             self.user_states[user_id]['current_levels'] = levels
             self.user_states[user_id]['current_levels'].sort(reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
@@ -258,7 +288,11 @@ class BotState:
                 Decimal('0.000050')
             ]
             self.user_states[user_id]['current_levels'] = levels
-            await save_levels(user_id, self.user_states[user_id]['current_levels'])
+            try:
+                await save_levels(user_id, levels)
+                logger.info(f"Default levels saved to DB after error for user_id={user_id}: {levels}")
+            except Exception as e:
+                logger.error(f"Failed to save default levels after error for user_id={user_id}: {str(e)}")
             logger.info(f"Set default levels due to error for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
 
     async def save_levels(self, user_id, levels):
@@ -379,10 +413,13 @@ class BotState:
             self.user_states[chat_id]['last_measured_gas'] = current_slow
             prev_level = self.user_states[chat_id]['prev_level']
             levels = self.user_states[chat_id]['current_levels']
+            logger.debug(f"get_manta_gas for chat_id={chat_id}: current_levels={levels}, prev_level={prev_level}")
 
             if not levels:
+                logger.warning(f"No levels set for chat_id={chat_id}, attempting to load default levels")
                 await self.load_or_set_default_levels(chat_id)
                 levels = self.user_states[chat_id]['current_levels']
+                logger.debug(f"After reload, current_levels for chat_id={chat_id}: {levels}")
 
             if not levels:
                 if force_base_message:
@@ -411,7 +448,7 @@ class BotState:
             self.user_states[chat_id]['active_level'] = min(levels, key=lambda x: abs(x - current_slow))
 
         except Exception as e:
-            logger.error(f"Error for chat_id={chat_id}: {str(e)}")
+            logger.error(f"Error for chat_id={chat_id}: {e}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
     async def set_silent_hours(self, chat_id, time_range):
@@ -1229,7 +1266,10 @@ async def schedule_restart():
 
         if current_day != last_restart_day:
             for restart_time in RESTART_TIMES:
-                restart_time_utc = (datetime.strptime(restart_time, "%H:%M") - kyiv_tz.utcoffset(now)).strftime("%H:%M")
+                restart_hour, restart_minute = map(int, restart_time.split(':'))
+                restart_dt = datetime(
+                    now.year, now.month, now.day, restart_hour, restart_minute, tzinfo=None
+                ).replace(tzinfo=kyiv_tz)
                 if current_time == restart_time:
                     logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
                     try:
@@ -1245,12 +1285,14 @@ async def schedule_restart():
                         state.converter_cache_time = None
                         logger.info("Кэши очищены")
                         scanner = Scanner()
+                        await scanner.init_session()  # Initialize aiohttp session
                         state = BotState(scanner)
                         logger.info("Новые экземпляры Scanner и BotState созданы")
                         for user_id, _ in ALLOWED_USERS:
                             await state.init_user_state(user_id)
                             state.init_user_stats(user_id)
                             await state.load_user_stats(user_id)
+                            logger.info(f"Restored user data for user_id={user_id}, current_levels={state.user_states[user_id]['current_levels']}")
                         logger.info("Пользовательские данные восстановлены")
                         await state.set_menu_button()
                         state.is_first_run = True
@@ -1260,39 +1302,3 @@ async def schedule_restart():
                         logger.error(f"Ошибка при перезагрузке: {str(e)}")
 
         await asyncio.sleep(10)
-
-async def main():
-    logger.info("Starting bot initialization")
-    await state.set_menu_button()
-    for user_id, _ in ALLOWED_USERS:
-        await state.init_user_state(user_id)
-        state.init_user_stats(user_id)
-        await state.load_user_stats(user_id)
-
-    app = web.Application()
-    async def health_check(request):
-        return web.Response(text="OK")
-    app.router.add_get('/', health_check)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', 8000)
-    await site.start()
-    logger.info("HTTP server started on port 8000")
-
-    await state.set_menu_button()
-    await asyncio.sleep(5)
-
-    tasks = [
-        state.dp.start_polling(state.bot),
-        scanner.monitor_gas(INTERVAL, monitor_gas_callback),
-        schedule_restart(),
-        state.background_price_fetcher()
-    ]
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-    for i, result in enumerate(results):
-        if isinstance(result, Exception):
-            logger.error(f"Task {i} failed with exception: {str(result)}")
-    await runner.cleanup()
-
-if __name__ == "__main__":
-    asyncio.run(main())
