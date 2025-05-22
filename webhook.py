@@ -30,12 +30,13 @@ async def webhook(request):
 async def start_background_tasks():
     """Запуск фоновых задач"""
     try:
+        logger.info("Preparing to start background tasks")
         tasks = [
-            asyncio.create_task(state.background_price_fetcher()),
-            asyncio.create_task(schedule_restart()),
-            asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback))
+            asyncio.create_task(state.background_price_fetcher(), name="background_price_fetcher"),
+            asyncio.create_task(schedule_restart(), name="schedule_restart"),
+            asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback), name="monitor_gas")
         ]
-        logger.info("Background tasks started")
+        logger.info("Background tasks started: background_price_fetcher, schedule_restart, monitor_gas")
         return tasks
     except Exception as e:
         logger.error(f"Error in background tasks: {str(e)}")
@@ -63,6 +64,7 @@ async def cleanup(app):
         logger.info("Cleaning up...")
         for task in app.get('background_tasks', []):
             task.cancel()
+            logger.debug(f"Cancelled task: {task.get_name()}")
         await state.bot.delete_webhook()
         await scanner.close()
         logger.info("Cleanup completed")
@@ -85,7 +87,6 @@ async def main():
         await runner.setup()
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         logger.info(f"HTTP server started on port {PORT}")
-        await site.start()
         await asyncio.Event().wait()  # Держим сервер запущенным
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
