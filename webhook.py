@@ -2,7 +2,7 @@ import os
 import logging
 import asyncio
 from aiohttp import web
-from telegram_bot import state, scanner, schedule_restart, monitor_gas_callback
+from telegram_bot import state, scanner
 
 # Настройка логирования
 logging.basicConfig(
@@ -27,16 +27,38 @@ async def webhook(request):
         logger.error(f"Error processing webhook: {str(e)}")
         return web.json_response({'status': 'error'}, status=500)
 
+async def reset_all_notified_levels():
+    """Сброс уведомлений для всех пользователей в определённое время"""
+    kyiv_tz = pytz.timezone('Europe/Kyiv')
+    while True:
+        try:
+            now = datetime.now(kyiv_tz)
+            current_time = now.strftime("%H:%M")
+            if current_time in state.RESTART_TIMES:
+                for chat_id in state.user_states:
+                    await state.reset_notified_levels(chat_id)
+                    logger.info(f"Reset notified levels for chat_id={chat_id} at {current_time}")
+                await asyncio.sleep(60)
+            await asyncio.sleep(30)
+        except Exception as e:
+            logger.error(f"Error in reset_all_notified_levels: {str(e)}")
+            await asyncio.sleep(30)
+
+async def monitor_gas_callback(gas):
+    """Callback для обработки газа для всех пользователей"""
+    for user_id, _ in state.ALLOWED_USERS:
+        await state.get_manta_gas(user_id)
+
 async def start_background_tasks():
     """Запуск фоновых задач"""
     try:
         logger.info("Preparing to start background tasks")
         tasks = [
             asyncio.create_task(state.background_price_fetcher(), name="background_price_fetcher"),
-            asyncio.create_task(schedule_restart(), name="schedule_restart"),
+            asyncio.create_task(reset_all_notified_levels(), name="reset_all_notified_levels"),
             asyncio.create_task(scanner.monitor_gas(60, monitor_gas_callback), name="monitor_gas")
         ]
-        logger.info("Background tasks started: background_price_fetcher, schedule_restart, monitor_gas")
+        logger.info("Background tasks started: background_price_fetcher, reset_all_notified_levels, monitor_gas")
         return tasks
     except Exception as e:
         logger.error(f"Error in background tasks: {str(e)}")
