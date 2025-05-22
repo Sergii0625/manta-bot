@@ -1,4 +1,3 @@
-```python
 import asyncio
 import logging
 import os
@@ -622,4 +621,3 @@ async def monitor_gas_callback(gas_value):
     for user_id, _ in ALLOWED_USERS:
         await asyncio.sleep(1)
         await state.get_manta_gas(user_id, force_base_message=False)
-```
