@@ -460,7 +460,7 @@ def create_keyboard(chat_id, keyboard_type):
     """Создание клавиатуры по типу."""
     keyboards = {
         'main': (
-            [["Газ"], ["Админ", "Меню"]] if chat_id == ADMIN_ID else
+            [[types.KeyboardButton(text="Газ")], [types.KeyboardButton(text="Админ"), types.KeyboardButton(text="Меню")]] if chat_id == ADMIN_ID else
             [[types.KeyboardButton(text="Газ"), types.KeyboardButton(text="Меню")]]
         ),
         'menu': [
