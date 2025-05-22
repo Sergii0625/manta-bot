@@ -496,6 +496,9 @@ async def handle_main_button(message: types.Message):
     if chat_id in state.pending_commands and text not in ["Тихие Часы", "Manta Конвертер", "Газ Калькулятор"]:
         del state.pending_commands[chat_id]
 
+    levels = state.user_states[chat_id]['current_levels']
+    levels_text = "\n".join(f"◆ {level:.6f} Gwei" for level in levels) if levels else "Уровни не установлены."
+
     handlers = {
         "Газ": lambda: state.get_manta_gas(chat_id, force_base_message=True),
         "Manta Price": lambda: state.get_manta_price(chat_id),
@@ -503,7 +506,7 @@ async def handle_main_button(message: types.Message):
         "Страх и Жадность": lambda: state.get_fear_greed(chat_id),
         "Уведомления": lambda: state.update_message(
             chat_id,
-            f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{''.join(f'◆ {level:.6f} Gwei\n' for level in state.user_states[chat_id]['current_levels']) if state.user_states[chat_id]['current_levels'] else 'Уровни не установлены.'}</pre></b>",
+            f"<b><pre>ТЕКУЩИЕ УВЕДОМЛЕНИЯ:\n\n{levels_text}</pre></b>",
             create_keyboard(chat_id, 'main')
         ),
         "Админ": lambda: state.get_admin_stats(chat_id),
