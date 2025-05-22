@@ -199,7 +199,16 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         """Установка уровней газа по умолчанию."""
         try:
-            default_levels = [Decimal(str(x / 10000)) for x in range(100, 0, -5)] + [Decimal('0.000050')]
+            default_levels = [
+                Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
+                Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
+                Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
+                Decimal('0.004000'), Decimal('0.003500'), Decimal('0.003000'), Decimal('0.002500'),
+                Decimal('0.002000'), Decimal('0.001500'), Decimal('0.001000'), Decimal('0.000500'),
+                Decimal('0.000050'), Decimal('0.000900'), Decimal('0.000800'), Decimal('0.000700'),
+                Decimal('0.000600'), Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'),
+                Decimal('0.000100'), Decimal('0.000010')
+            ]
             self.user_states[user_id]['default_levels'] = default_levels
             self.user_states[user_id]['user_added_levels'] = []
             self.user_states[user_id]['current_levels'] = default_levels.copy()
@@ -450,7 +459,10 @@ class BotState:
 def create_keyboard(chat_id, keyboard_type):
     """Создание клавиатуры по типу."""
     keyboards = {
-        'main': [[types.KeyboardButton(text="Газ"), types.KeyboardButton(text="Меню")]] + ([[types.KeyboardButton(text="Админ")]] if chat_id == ADMIN_ID else []),
+        'main': (
+            [["Газ"], ["Админ", "Меню"]] if chat_id == ADMIN_ID else
+            [[types.KeyboardButton(text="Газ"), types.KeyboardButton(text="Меню")]]
+        ),
         'menu': [
             [types.KeyboardButton(text="Manta Конвертер"), types.KeyboardButton(text="Газ Калькулятор")],
             [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
