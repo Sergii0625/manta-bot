@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Получение переменных окружения
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"https://manta-bot.onrender.com{WEBHOOK_PATH}"
-PORT = int(os.getenv("PORT", 8000))  # Используем PORT из Render или 8000 по умолчанию
+PORT = int(os.getenv("PORT", 8000))
 
 async def webhook(request):
     """Обработка входящих обновлений от Telegram"""
@@ -45,11 +45,7 @@ async def init_bot(app):
     """Инициализация бота и установка webhook"""
     try:
         logger.info("Starting bot initialization")
-        # Проверка подключения к базе данных
-        if not await state.check_db_connection():
-            logger.error("Cannot proceed with bot initialization due to database connection failure")
-            raise Exception("Database connection failed")
-        await scanner.init_session()  # Initialize aiohttp session
+        await scanner.init_session()
         await state.bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
         app['background_tasks'] = await start_background_tasks()
@@ -86,7 +82,7 @@ async def main():
         site = web.TCPSite(runner, '0.0.0.0', PORT)
         logger.info(f"HTTP server started on port {PORT}")
         await site.start()
-        await asyncio.Event().wait()  # Держим сервер запущенным
+        await asyncio.Event().wait()
     except Exception as e:
         logger.error(f"Error in main: {str(e)}")
         raise

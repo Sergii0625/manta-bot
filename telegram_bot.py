@@ -8,8 +8,8 @@ from decimal import Decimal
 from datetime import datetime, time
 import aiohttp
 from monitoring_scanner import Scanner
-import asyncpg
 import pytz
+import aiofiles
 
 # Настройка логирования
 logging.basicConfig(
@@ -33,129 +33,14 @@ INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
 RESTART_TIMES = ["21:00"]
+LEVELS_FILE = "user_levels.json"
 
-# Функции для работы с PostgreSQL
-async def init_db():
-    try:
-        conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_levels (
-                user_id BIGINT PRIMARY KEY,
-                levels TEXT
-            );
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id BIGINT PRIMARY KEY,
-                stats TEXT
-            );
-            CREATE TABLE IF NOT EXISTS silent_hours (
-                user_id BIGINT PRIMARY KEY,
-                start_time TIME,
-                end_time TIME
-            );
-        """)
-        logger.info("Database initialized successfully")
-        return conn
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        raise
-
-async def save_silent_hours(user_id, start_time, end_time):
-    conn = await init_db()
-    await conn.execute(
-        """
-        INSERT INTO silent_hours (user_id, start_time, end_time)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id) DO UPDATE SET start_time = $2, end_time = $3
-        """,
-        user_id, start_time, end_time
-    )
-    await conn.close()
-    logger.debug(f"Saved silent hours for user_id={user_id}: {start_time}-{end_time}")
-
-async def load_silent_hours(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT start_time, end_time FROM silent_hours WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result:
-        logger.debug(f"Loaded silent hours for user_id={user_id}: {result['start_time']}-{result['end_time']}")
-        return result['start_time'], result['end_time']
-    logger.debug(f"No silent hours found for user_id={user_id}")
-    return None, None
-
-async def save_levels(user_id, levels):
-    conn = await init_db()
-    levels_str = json.dumps([str(level) for level in levels])
-    try:
-        await conn.execute(
-            """
-            INSERT INTO user_levels (user_id, levels)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET levels = $2
-            """,
-            user_id, levels_str
-        )
-        logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
-    except Exception as e:
-        logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
-    finally:
-        await conn.close()
-
-async def load_levels(user_id):
-    try:
-        conn = await init_db()
-        result = await conn.fetchrow(
-            "SELECT levels FROM user_levels WHERE user_id = $1",
-            user_id
-        )
-        await conn.close()
-        if result and result['levels']:
-            levels = json.loads(result['levels'])
-            if not levels:
-                logger.warning(f"Empty levels list in DB for user_id={user_id}")
-                return None
-            loaded_levels = [Decimal(level) for level in levels]
-            logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
-            return loaded_levels
-        logger.warning(f"No levels found in DB for user_id={user_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Error loading levels for user_id={user_id}: {str(e)}")
-        return None
-
-async def save_stats(user_id, stats):
-    conn = await init_db()
-    stats_str = json.dumps(stats)
-    await conn.execute(
-        """
-        INSERT INTO user_stats (user_id, stats)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id) DO UPDATE SET stats = $2
-        """,
-        user_id, stats_str
-    )
-    await conn.close()
-    logger.debug(f"Saved stats for user_id={user_id}")
-
-async def load_stats(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT stats FROM user_stats WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result:
-        logger.debug(f"Loaded stats for user_id={user_id}")
-        return json.loads(result['stats'])
-    logger.debug(f"No stats found for user_id={user_id}")
-    return None
-
-def is_silent_hour(user_id, now_kyiv):
-    start_time, end_time = state.user_states[user_id].get('silent_hours', (None, None))
-    if start_time is None or end_time is None:
+def is_silent_hour(user_id, now_kyiv, user_states):
+    silent_enabled = user_states[user_id].get('silent_enabled', True)
+    if not silent_enabled:
         return False
+    start_time = time(0, 0)  # 00:00
+    end_time = time(8, 0)   # 08:00
     now_time = now_kyiv.time()
     if start_time <= end_time:
         return start_time <= now_time <= end_time
@@ -183,15 +68,8 @@ class BotState:
         logger.info("BotState initialized")
 
     async def check_db_connection(self):
-        """Проверка целостности подключения к базе данных при старте"""
-        try:
-            conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-            await conn.close()
-            logger.info("Database connection test successful")
-            return True
-        except Exception as e:
-            logger.error(f"Database connection test failed: {str(e)}")
-            return False
+        logger.info("No database used, connection check skipped")
+        return True
 
     async def init_user_state(self, user_id):
         if user_id not in self.user_states:
@@ -199,18 +77,15 @@ class BotState:
                 'prev_level': None,
                 'last_measured_gas': None,
                 'current_levels': [],
+                'default_levels': [],
+                'user_added_levels': [],
                 'active_level': None,
                 'confirmation_states': {},
                 'notified_levels': set(),
-                'silent_hours': (None, None)
+                'silent_enabled': True
             }
             await self.load_or_set_default_levels(user_id)
-            if not self.user_states[user_id]['current_levels']:
-                logger.warning(f"current_levels is empty for user_id={user_id} after load_or_set_default_levels, forcing default levels")
-                await self.load_or_set_default_levels(user_id)  # Повторная попытка
-            start_time, end_time = await load_silent_hours(user_id)
-            self.user_states[user_id]['silent_hours'] = (start_time, end_time)
-            logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}, silent_hours={self.user_states[user_id]['silent_hours']}")
+            logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}, silent_enabled={self.user_states[user_id]['silent_enabled']}")
 
     def init_user_stats(self, user_id):
         if user_id not in self.user_stats:
@@ -227,7 +102,6 @@ class BotState:
             for key in default_stats:
                 if key not in self.user_stats[user_id][today]:
                     self.user_stats[user_id][today][key] = 0
-        asyncio.create_task(self.save_user_stats(user_id))
         logger.debug(f"Initialized user_stats for user_id={user_id}")
 
     async def check_access(self, message: types.Message):
@@ -253,10 +127,10 @@ class BotState:
 
     async def load_or_set_default_levels(self, user_id):
         try:
-            levels = await load_levels(user_id)
-            if levels is None or not levels:
+            levels_data = await self.load_levels_from_file(user_id)
+            if levels_data is None or not levels_data['default_levels'] or not levels_data['user_added_levels']:
                 logger.warning(f"No levels or empty levels for user_id={user_id}, setting default levels")
-                levels = [
+                default_levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
                     Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
                     Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
@@ -266,17 +140,19 @@ class BotState:
                     Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
                     Decimal('0.000050')
                 ]
-                try:
-                    await save_levels(user_id, levels)
-                    logger.info(f"Default levels saved to DB for user_id={user_id}: {levels}")
-                except Exception as e:
-                    logger.error(f"Failed to save default levels for user_id={user_id}: {str(e)}")
-            self.user_states[user_id]['current_levels'] = levels
-            self.user_states[user_id]['current_levels'].sort(reverse=True)
+                levels_data = {
+                    'default_levels': default_levels,
+                    'user_added_levels': []
+                }
+                await self.save_levels_to_file(user_id, levels_data)
+                logger.info(f"Default levels saved for user_id={user_id}: {default_levels}")
+            self.user_states[user_id]['default_levels'] = levels_data['default_levels']
+            self.user_states[user_id]['user_added_levels'] = levels_data['user_added_levels']
+            self.user_states[user_id]['current_levels'] = sorted(set(levels_data['default_levels'] + levels_data['user_added_levels']), reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
         except Exception as e:
             logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default levels")
-            levels = [
+            default_levels = [
                 Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
                 Decimal('0.008000'), Decimal('0.007500'), Decimal('0.007000'), Decimal('0.006500'),
                 Decimal('0.006000'), Decimal('0.005500'), Decimal('0.005000'), Decimal('0.004500'),
@@ -286,41 +162,56 @@ class BotState:
                 Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
                 Decimal('0.000050')
             ]
-            self.user_states[user_id]['current_levels'] = levels
+            self.user_states[user_id]['default_levels'] = default_levels
+            self.user_states[user_id]['user_added_levels'] = []
+            self.user_states[user_id]['current_levels'] = default_levels.copy()
             try:
-                await save_levels(user_id, levels)
-                logger.info(f"Default levels saved to DB after error for user_id={user_id}: {levels}")
+                await self.save_levels_to_file(user_id, {'default_levels': default_levels, 'user_added_levels': []})
+                logger.info(f"Default levels saved to file after error for user_id={user_id}")
             except Exception as e:
-                logger.error(f"Failed to save default levels after error for user_id={user_id}: {str(e)}")
+                logger.error(f"Failed to save default levels for user_id={user_id}: {str(e)}")
             logger.info(f"Set default levels due to error for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
 
-    async def save_levels(self, user_id, levels):
-        levels.sort(reverse=True)
+    async def save_levels_to_file(self, user_id, levels_data):
         try:
-            await save_levels(user_id, levels)
-            self.user_states[user_id]['current_levels'] = levels
-            logger.debug(f"Saved levels for user_id={user_id}: {levels}")
+            async with aiofiles.open(LEVELS_FILE, 'r') as f:
+                all_levels = json.loads(await f.read())
+        except (FileNotFoundError, json.JSONDecodeError):
+            all_levels = {}
+        all_levels[str(user_id)] = {
+            'default_levels': [str(level) for level in levels_data['default_levels']],
+            'user_added_levels': [str(level) for level in levels_data['user_added_levels']]
+        }
+        async with aiofiles.open(LEVELS_FILE, 'w') as f:
+            await f.write(json.dumps(all_levels, indent=2))
+        logger.debug(f"Saved levels to file for user_id={user_id}: {levels_data}")
+
+    async def load_levels_from_file(self, user_id):
+        try:
+            async with aiofiles.open(LEVELS_FILE, 'r') as f:
+                all_levels = json.loads(await f.read())
+            user_levels = all_levels.get(str(user_id), {})
+            return {
+                'default_levels': [Decimal(level) for level in user_levels.get('default_levels', [])],
+                'user_added_levels': [Decimal(level) for level in user_levels.get('user_added_levels', [])]
+            }
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            logger.debug(f"No levels file or data for user_id={user_id}")
+            return None
+
+    async def save_levels(self, user_id, levels):
+        default_levels = self.user_states[user_id]['default_levels']
+        user_added_levels = [level for level in levels if level not in default_levels]
+        self.user_states[user_id]['user_added_levels'] = user_added_levels
+        self.user_states[user_id]['current_levels'] = sorted(set(default_levels + user_added_levels), reverse=True)
+        try:
+            await self.save_levels_to_file(user_id, {
+                'default_levels': default_levels,
+                'user_added_levels': user_added_levels
+            })
+            logger.debug(f"Saved levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
         except Exception as e:
             logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
-
-    async def load_user_stats(self, user_id):
-        try:
-            stats = await load_stats(user_id)
-            if stats is None:
-                stats = {}
-            self.user_stats[user_id] = stats
-            self.init_user_stats(user_id)
-            logger.debug(f"Loaded user stats for user_id={user_id}")
-        except Exception as e:
-            logger.error(f"Error loading stats for user_id={user_id}: {str(e)}")
-            self.init_user_stats(user_id)
-
-    async def save_user_stats(self, user_id):
-        try:
-            await save_stats(user_id, self.user_stats[user_id])
-            logger.debug(f"Saved stats for user_id={user_id}")
-        except Exception as e:
-            logger.error(f"Error saving stats for user_id={user_id}: {str(e)}")
 
     async def update_message(self, chat_id, text, reply_markup=None):
         try:
@@ -338,7 +229,7 @@ class BotState:
     async def confirm_level_crossing(self, chat_id, initial_value, direction, target_level):
         kyiv_tz = pytz.timezone('Europe/Kyiv')
         now_kyiv = datetime.now(kyiv_tz)
-        if is_silent_hour(chat_id, now_kyiv):
+        if is_silent_hour(chat_id, now_kyiv, self.user_states):
             logger.info(f"Silent hours active for chat_id={chat_id}, skipping notification for level={target_level:.6f}")
             return
 
@@ -378,11 +269,26 @@ class BotState:
                 f"<pre>{'🟩' if direction == 'down' else '🟥'} ◆ ГАЗ {'УМЕНЬШИЛСЯ' if direction == 'down' else 'УВЕЛИЧИЛСЯ'} до: {values[-1]:.6f} Gwei\n"
                 f"Уровень: {target_level:.6f} Gwei подтверждён</pre>"
             )
-            await self.update_message(chat_id, notification_message, create_main_keyboard(chat_id))
-            self.user_states[chat_id]['notified_levels'].add(target_level)
-            self.user_states[chat_id]['active_level'] = target_level
-            self.user_states[chat_id]['prev_level'] = last_measured
-            logger.info(f"Level {target_level:.6f} confirmed for chat_id={chat_id}, notified")
+            # Отправка уведомления в зависимости от типа уровня
+            if target_level in self.user_states[chat_id]['default_levels']:
+                # Уведомление для всех пользователей
+                for user_id, _ in ALLOWED_USERS:
+                    if user_id == chat_id or target_level in self.user_states[user_id]['current_levels']:
+                        try:
+                            await self.update_message(user_id, notification_message, create_main_keyboard(user_id))
+                            self.user_states[user_id]['notified_levels'].add(target_level)
+                            self.user_states[user_id]['active_level'] = target_level
+                            self.user_states[user_id]['prev_level'] = last_measured
+                            logger.info(f"Level {target_level:.6f} notified to user_id={user_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to notify user_id={user_id}: {str(e)}")
+            else:
+                # Уведомление только для пользователя, добавившего уровень
+                await self.update_message(chat_id, notification_message, create_main_keyboard(chat_id))
+                self.user_states[chat_id]['notified_levels'].add(target_level)
+                self.user_states[chat_id]['active_level'] = target_level
+                self.user_states[chat_id]['prev_level'] = last_measured
+                logger.info(f"Level {target_level:.6f} notified to chat_id={chat_id} (user-added level)")
         else:
             logger.info(f"Confirmation failed or already notified for chat_id={chat_id}, target={target_level:.6f}, is_confirmed={is_confirmed}, notified={target_level in self.user_states[chat_id]['notified_levels']}")
 
@@ -436,7 +342,7 @@ class BotState:
             else:
                 kyiv_tz = pytz.timezone('Europe/Kyiv')
                 now_kyiv = datetime.now(kyiv_tz)
-                if is_silent_hour(chat_id, now_kyiv):
+                if is_silent_hour(chat_id, now_kyiv, self.user_states):
                     logger.info(f"Silent hours active for chat_id={chat_id}, skipping notification check")
                     self.user_states[chat_id]['prev_level'] = current_slow
                     return
@@ -459,21 +365,9 @@ class BotState:
             logger.error(f"Error in get_manta_gas for chat_id={chat_id}: {e}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
-    async def set_silent_hours(self, chat_id, time_range):
-        try:
-            start_str, end_str = time_range.split('-')
-            start_time = datetime.strptime(start_str, "%H:%M").time()
-            end_time = datetime.strptime(end_str, "%H:%M").time()
-            await save_silent_hours(chat_id, start_time, end_time)
-            self.user_states[chat_id]['silent_hours'] = (start_time, end_time)
-            logger.info(f"Set silent hours for chat_id={chat_id}: {start_time}-{end_time}")
-            return True, f"Тихие Часы установлены: {start_str}-{end_str}"
-        except ValueError as e:
-            logger.error(f"Invalid time format for chat_id={chat_id}: {time_range}, error: {str(e)}")
-            return False, "Ошибка: введите время в формате ЧЧ:ММ-ЧЧ:ММ, например, 00:00-07:00"
-        except Exception as e:
-            logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
-            return False, f"Ошибка: {str(e)}"
+    async def set_silent_hours(self, chat_id, enable):
+        self.user_states[chat_id]['silent_enabled'] = enable
+        logger.info(f"Silent hours {'enabled' if enable else 'disabled'} for chat_id={chat_id}")
 
     async def background_price_fetcher(self):
         while True:
@@ -539,7 +433,6 @@ class BotState:
             )
             await self.update_message(chat_id, message, create_menu_keyboard())
             return True
-
         except Exception as e:
             logger.error(f"Error in convert_manta for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, "⚠️ Ошибка при конвертации.", create_menu_keyboard())
@@ -554,7 +447,6 @@ class BotState:
                 return None
 
             eth_usd = prices.get("ethereum")
-
             gas_units = 1000000
             fee_per_tx_eth = gas_price * gas_units / 10**9
             total_cost_usdt = fee_per_tx_eth * tx_count * eth_usd
@@ -566,7 +458,6 @@ class BotState:
             )
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
             return True
-
         except Exception as e:
             logger.error(f"Error in calculate_gas_cost for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, "⚠️ Ошибка при расчёте стоимости газа.", create_main_keyboard(chat_id))
@@ -584,7 +475,6 @@ class BotState:
             "Taiko": "taiko"
         }
         token_data = {}
-
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {
             "vs_currency": "usd",
@@ -595,7 +485,6 @@ class BotState:
             "sparkline": "false",
             "price_change_percentage": "24h,7d,30d"
         }
-
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params) as response:
@@ -603,7 +492,6 @@ class BotState:
                         logger.warning(f"CoinGecko API error: {response.status}")
                         return self.l2_data_cache or token_data
                     data = await response.json()
-
                     token_map = {coin["id"]: coin for coin in data}
                     for name, token_id in l2_tokens.items():
                         coin = token_map.get(token_id)
@@ -637,7 +525,6 @@ class BotState:
                                 "price": "Н/Д", "24h": "Н/Д", "7d": "Н/Д", "30d": "Н/Д", "all": "Н/Д",
                                 "ath_price": "Н/Д", "ath_date": "Н/Д", "atl_price": "Н/Д", "atl_date": "Н/Д"
                             }
-
                     self.l2_data_cache = token_data
                     self.l2_data_time = datetime.now(pytz.timezone('Europe/Kyiv'))
                     logger.debug("L2 data fetched and cached")
@@ -650,11 +537,9 @@ class BotState:
         current_time = datetime.now(pytz.timezone('Europe/Kyiv'))
         if self.fear_greed_time and (current_time - self.fear_greed_time).total_seconds() < self.fear_greed_cooldown and self.fear_greed_cache:
             return self.fear_greed_cache
-
         url = "https://pro-api.coinmarketcap.com/v3/fear-and-greed/historical"
         headers = {"X-CMC_PRO_API_KEY": CMC_API_KEY}
         params = {"limit": 30}
-
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=headers, params=params) as response:
                 if response.status != 200:
@@ -664,40 +549,32 @@ class BotState:
                 if "data" not in data or not data["data"]:
                     logger.error("No data returned from Fear & Greed API")
                     return None
-
                 fg_data = data["data"]
                 current = fg_data[0]
                 current_value = int(current["value"])
                 current_category = current["value_classification"]
-
                 yesterday = fg_data[1]
                 yesterday_value = int(yesterday["value"])
                 yesterday_category = yesterday["value_classification"]
-
                 week_ago = fg_data[7] if len(fg_data) > 7 else fg_data[-1]
                 week_ago_value = int(week_ago["value"])
                 week_ago_category = week_ago["value_classification"]
-
                 month_ago = fg_data[-1]
                 month_ago_value = int(month_ago["value"])
                 month_ago_category = month_ago["value_classification"]
-
                 year_data = fg_data[:365] if len(fg_data) > 365 else fg_data
                 year_values = [(int(d["value"]), d["timestamp"], d["value_classification"]) for d in year_data]
                 max_year = max(year_values, key=lambda x: x[0])
                 min_year = min(year_values, key=lambda x: x[0])
                 max_year_value, max_year_date, max_year_category = max_year
                 min_year_value, min_year_date, min_year_category = min_year
-
                 def parse_timestamp(ts):
                     try:
                         return datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").strftime("%d.%m.%Y")
                     except ValueError:
                         return datetime.fromtimestamp(int(ts)).strftime("%d.%m.%Y")
-
                 max_year_date = parse_timestamp(max_year_date)
                 min_year_date = parse_timestamp(min_year_date)
-
                 fear_greed_data = {
                     "current": {"value": current_value, "category": current_category},
                     "yesterday": {"value": yesterday_value, "category": yesterday_category},
@@ -706,7 +583,6 @@ class BotState:
                     "year_max": {"value": max_year_value, "date": max_year_date, "category": max_year_category},
                     "year_min": {"value": min_year_value, "date": min_year_date, "category": min_year_category}
                 }
-
                 self.fear_greed_cache = fear_greed_data
                 self.fear_greed_time = current_time
                 return fear_greed_data
@@ -718,7 +594,6 @@ class BotState:
                 logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
                 await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
                 return
-
             manta_data = token_data["MANTA"]
             price = manta_data["price"]
             price_change_24h = manta_data["24h"]
@@ -729,14 +604,12 @@ class BotState:
             ath_date = manta_data["ath_date"]
             atl_price = manta_data["atl_price"]
             atl_date = manta_data["atl_date"]
-
             spot_volume = await self.scanner.get_manta_spot_volume()
             futures_volume = await self.scanner.get_manta_futures_volume()
             spot_volume_m = round(spot_volume / Decimal('1000000')) if spot_volume else 0
             futures_volume_m = round(futures_volume / Decimal('1000000')) if futures_volume else 0
             spot_volume_str = f"{spot_volume_m}M$" if spot_volume else "Н/Д"
             futures_volume_str = f"{futures_volume_m}M$" if futures_volume else "Н/Д"
-
             message = (
                 f"<pre>"
                 f"🦎 Данные с CoinGecko:\n"
@@ -754,7 +627,6 @@ class BotState:
                 f"</pre>"
             )
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
-
         except Exception as e:
             logger.error(f"Error fetching price for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
@@ -766,7 +638,6 @@ class BotState:
                 logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
                 await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
                 return
-
             message = (
                 f"<pre>"
                 f"🦎 Данные с CoinGecko:\n"
@@ -781,7 +652,6 @@ class BotState:
                 price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
                 change_str = f"{float(data['24h']):>6.2f}%" if data['24h'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
-
             message += "\n◆ Сравнение L2 токенов (7 дней):\n"
             sorted_by_7d = sorted(
                 token_data.items(),
@@ -792,7 +662,6 @@ class BotState:
                 price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
                 change_str = f"{float(data['7d']):>6.2f}%" if data['7d'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
-
             message += "\n◆ Сравнение L2 токенов (месяц):\n"
             sorted_by_30d = sorted(
                 token_data.items(),
@@ -803,7 +672,6 @@ class BotState:
                 price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
                 change_str = f"{float(data['30d']):>6.2f}%" if data['30d'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
-
             message += "\n◆ Сравнение L2 токенов (все время):\n"
             sorted_by_all = sorted(
                 token_data.items(),
@@ -815,9 +683,7 @@ class BotState:
                 change_str = f"{float(data['all']):>6.2f}%" if data['all'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
             message += "</pre>"
-
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
-
         except Exception as e:
             logger.error(f"Error fetching L2 comparison for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
@@ -828,7 +694,6 @@ class BotState:
             if not fg_data:
                 await self.update_message(chat_id, "⚠️ Не удалось получить данные Fear & Greed от CoinMarketCap.", create_main_keyboard(chat_id))
                 return
-
             current_value = fg_data["current"]["value"]
             yesterday_value = fg_data["yesterday"]["value"]
             week_ago_value = fg_data["week_ago"]["value"]
@@ -837,11 +702,9 @@ class BotState:
             max_year_date = fg_data["year_max"]["date"]
             min_year_value = fg_data["year_min"]["value"]
             min_year_date = fg_data["year_min"]["date"]
-
             bar_length = 20
             filled = int(current_value / 100 * bar_length)
             progress_bar = f"🔴 {'█' * filled}{'▁' * (bar_length - filled)} 🟢"
-
             message = (
                 f"<pre>"
                 f"◆ Индекс страха и жадности: {current_value}\n"
@@ -858,9 +721,7 @@ class BotState:
                 f"📉 Мин: {min_year_value} ({min_year_date})"
                 f"</pre>"
             )
-
             await self.update_message(chat_id, message, create_main_keyboard(chat_id))
-
         except Exception as e:
             logger.error(f"Error fetching Fear & Greed for chat_id={chat_id}: {str(e)}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
@@ -874,7 +735,6 @@ class BotState:
         for user_id, user_name in ALLOWED_USERS:
             if user_id == ADMIN_ID:
                 continue
-            await self.load_user_stats(user_id)
             stats = self.user_stats[user_id].get(today, {})
             if any(stats.values()):
                 message += f"{user_id} {user_name}\n"
@@ -912,7 +772,7 @@ def create_menu_keyboard():
 
 def create_silent_hours_keyboard():
     keyboard = [
-        [types.KeyboardButton(text="Отключить Тихие Часы")],
+        [types.KeyboardButton(text="Отключить Тихие Часы"), types.KeyboardButton(text="Включить Тихие Часы")],
         [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -980,7 +840,6 @@ async def handle_main_button(message: types.Message):
     today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
     if text not in ["Меню", "Назад"]:
         state.user_stats[chat_id][today][text] += 1
-        await state.save_user_stats(chat_id)
 
     if chat_id in state.pending_commands and text not in ["Задать Уровни", "Тихие Часы", "Manta Конвертер", "Газ Калькулятор"]:
         del state.pending_commands[chat_id]
@@ -1012,14 +871,14 @@ async def handle_main_button(message: types.Message):
         else:
             await state.update_message(chat_id, "Доступ только для админа.", create_main_keyboard(chat_id))
     elif text == "Тихие Часы":
-        state.pending_commands[chat_id] = {'step': 'silent_hours_input'}
-        start_time, end_time = state.user_states[chat_id]['silent_hours']
-        current_silent = f"Текущие Тихие Часы: {start_time.strftime('%H:%M')}-{end_time.strftime('%H:%M')}" if start_time and end_time else "Тихие Часы не установлены."
+        silent_enabled = state.user_states[chat_id]['silent_enabled']
+        status = "включены" if silent_enabled else "отключены"
         await state.update_message(
             chat_id,
-            f"{current_silent}\n\nУстановите время, пример: 00:00-07:00",
+            f"Тихие Часы {status}: 00:00–08:00",
             create_silent_hours_keyboard()
         )
+        state.pending_commands[chat_id] = {'step': 'silent_hours_input'}
     elif text == "Manta Конвертер":
         state.pending_commands[chat_id] = {'step': 'converter_input'}
         await state.update_message(chat_id, "Введите количество MANTA для конвертации:", create_converter_keyboard())
@@ -1115,18 +974,17 @@ async def process_value(message: types.Message):
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
             elif text == "Отключить Тихие Часы":
-                await save_silent_hours(chat_id, None, None)
-                state.user_states[chat_id]['silent_hours'] = (None, None)
+                await state.set_silent_hours(chat_id, False)
                 logger.info(f"Disabled silent hours for chat_id={chat_id}")
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Тихие Часы отключены.", create_main_keyboard(chat_id))
+            elif text == "Включить Тихие Часы":
+                await state.set_silent_hours(chat_id, True)
+                logger.info(f"Enabled silent hours for chat_id={chat_id}")
+                del state.pending_commands[chat_id]
+                await state.update_message(chat_id, "Тихие Часы включены: 00:00–08:00", create_main_keyboard(chat_id))
             else:
-                success, response = await state.set_silent_hours(chat_id, text)
-                if success:
-                    del state.pending_commands[chat_id]
-                    await state.update_message(chat_id, response, create_main_keyboard(chat_id))
-                else:
-                    await state.update_message(chat_id, response, create_silent_hours_keyboard())
+                await state.update_message(chat_id, "Тихие Часы фиксированы: 00:00–08:00. Выберите действие.", create_silent_hours_keyboard())
 
         elif state_data['step'] == 'range_selection':
             if text == "Отмена":
@@ -1168,7 +1026,6 @@ async def process_value(message: types.Message):
                     if not (min_val <= float(level) <= max_val):
                         await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
                         return
-
                     if level not in state_data['levels']:
                         state_data['levels'].append(level)
                         await state.save_levels(chat_id, state_data['levels'])
@@ -1205,7 +1062,6 @@ async def process_value(message: types.Message):
                     if not (min_val <= float(level) <= max_val):
                         await state.update_message(chat_id, f"Ошибка: введите значение в диапазоне {min_val}–{max_val}", create_level_input_keyboard())
                         return
-
                     if level not in state_data['levels']:
                         state_data['levels'].append(level)
                         await state.save_levels(chat_id, state_data['levels'])
@@ -1231,6 +1087,8 @@ async def process_value(message: types.Message):
                     level_to_delete = Decimal(level_str)
                     if level_to_delete in state.user_states[chat_id]['current_levels']:
                         state.user_states[chat_id]['current_levels'].remove(level_to_delete)
+                        if level_to_delete in state.user_states[chat_id]['user_added_levels']:
+                            state.user_states[chat_id]['user_added_levels'].remove(level_to_delete)
                         await state.save_levels(chat_id, state.user_states[chat_id]['current_levels'])
                         del state.pending_commands[chat_id]
                         await state.update_message(chat_id, f"Уровень {level_to_delete:.6f} Gwei удалён.", create_main_keyboard(chat_id))
@@ -1257,7 +1115,6 @@ async def monitor_gas_callback(gas_value):
         state.is_first_run = False
         logger.debug("monitor_gas_callback completed first run")
         return
-
     for user_id, _ in ALLOWED_USERS:
         try:
             await asyncio.sleep(1)
@@ -1276,7 +1133,6 @@ async def schedule_restart():
         now = datetime.now(kyiv_tz)
         current_time = now.strftime("%H:%M")
         current_day = now.date()
-
         if current_day != last_restart_day:
             for restart_time in RESTART_TIMES:
                 restart_hour, restart_minute = map(int, restart_time.split(':'))
@@ -1286,9 +1142,6 @@ async def schedule_restart():
                 if current_time == restart_time:
                     logger.info(f"Запуск перезагрузки бота в {restart_time} по киевскому времени")
                     try:
-                        for user_id, _ in ALLOWED_USERS:
-                            await state.save_user_stats(user_id)
-                            await state.save_levels(user_id, state.user_states[user_id]['current_levels'])
                         await scanner.close()
                         state.l2_data_cache = None
                         state.l2_data_time = None
@@ -1298,13 +1151,12 @@ async def schedule_restart():
                         state.converter_cache_time = None
                         logger.info("Кэши очищены")
                         scanner = Scanner()
-                        await scanner.init_session()  # Initialize aiohttp session
+                        await scanner.init_session()
                         state = BotState(scanner)
                         logger.info("Новые экземпляры Scanner и BotState созданы")
                         for user_id, _ in ALLOWED_USERS:
                             await state.init_user_state(user_id)
                             state.init_user_stats(user_id)
-                            await state.load_user_stats(user_id)
                             logger.info(f"Restored user data for user_id={user_id}, current_levels={state.user_states[user_id]['current_levels']}")
                         logger.info("Пользовательские данные восстановлены")
                         await state.set_menu_button()
@@ -1313,5 +1165,4 @@ async def schedule_restart():
                         last_restart_day = current_day
                     except Exception as e:
                         logger.error(f"Ошибка при перезагрузке: {str(e)}")
-
         await asyncio.sleep(10)
