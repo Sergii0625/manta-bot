@@ -16,13 +16,8 @@ WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"https://manta-bot.onrender.com{WEBHOOK_PATH}"
 PORT = int(os.getenv("PORT", 8000))
 
-# Проверка переменных окружения
-if not os.getenv("TELEGRAM_TOKEN"):
-    logger.error("TELEGRAM_TOKEN not set in environment variables")
-    raise ValueError("TELEGRAM_TOKEN is required")
-
 async def webhook(request):
-    """Обработка входящих обновлений от Telegram."""
+    """Обработка входящих обновлений от Telegram"""
     try:
         update = await request.json()
         logger.debug(f"Received update: {update}")
@@ -33,7 +28,7 @@ async def webhook(request):
         return web.json_response({'status': 'error'}, status=500)
 
 async def start_background_tasks():
-    """Запуск фоновых задач."""
+    """Запуск фоновых задач"""
     try:
         tasks = [
             asyncio.create_task(state.background_price_fetcher()),
@@ -47,7 +42,7 @@ async def start_background_tasks():
         raise
 
 async def init_bot(app):
-    """Инициализация бота и установка webhook."""
+    """Инициализация бота и установка webhook"""
     try:
         logger.info("Starting bot initialization")
         await scanner.init_session()
@@ -59,7 +54,7 @@ async def init_bot(app):
         raise
 
 async def cleanup(app):
-    """Очистка при завершении работы."""
+    """Очистка при завершении работы"""
     try:
         logger.info("Cleaning up...")
         for task in app.get('background_tasks', []):
@@ -71,7 +66,7 @@ async def cleanup(app):
         logger.error(f"Error during cleanup: {str(e)}")
 
 def create_app():
-    """Создание приложения aiohttp."""
+    """Создание приложения aiohttp"""
     app = web.Application()
     app.router.add_post(WEBHOOK_PATH, webhook)
     app.on_startup.append(init_bot)
@@ -79,7 +74,7 @@ def create_app():
     return app
 
 async def main():
-    """Основная функция для запуска сервера."""
+    """Основная функция для запуска сервера"""
     try:
         app = create_app()
         runner = web.AppRunner(app)
