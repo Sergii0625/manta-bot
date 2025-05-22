@@ -85,7 +85,7 @@ class BotState:
                 'default_levels': [], 'user_added_levels': [], 'active_level': None,
                 'confirmation_states': {}, 'notified_levels': set(), 'silent_enabled': True
             }
-            await self.load_or_set_default_levels(user_id)
+selves
 
     def init_user_stats(self, user_id):
         """Инициализация статистики пользователя."""
@@ -113,6 +113,7 @@ class BotState:
     async def update_message(self, chat_id, text, reply_markup=None):
         """Отправка или обновление сообщения."""
         try:
+            logger.debug(f"Sending message to chat_id={chat_id}: {text}")
             msg = await self.bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=reply_markup)
             self.message_ids[chat_id] = msg.message_id
         except Exception as e:
@@ -441,16 +442,23 @@ class BotState:
             await self.update_message(chat_id, "Доступ только для админа.", create_keyboard(chat_id, 'main'))
             return
         today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
-        message = "<b>Статистика использования бота за сегодня:</b>\n\n<pre>"
+        message = "<b>Статистика использования бота за сегодня:</b>\n\n"
         has_activity = False
+        stats_lines = []
         for user_id, user_name in ALLOWED_USERS:
             if user_id == ADMIN_ID:
                 continue
             stats = self.user_stats.get(user_id, {}).get(today, {})
             if any(stats.values()):
-                message += f"{user_id} {user_name}\n" + "\n".join(f"{k} - {v}" for k, v in stats.items() if v > 0) + "\n\n"
+                stats_lines.append(f"{user_id} {user_name}")
+                stats_lines.extend(f"{k} - {v}" for k, v in stats.items() if v > 0)
+                stats_lines.append("")
                 has_activity = True
-        message += "</pre>" if has_activity else "Сегодня никто из пользователей (кроме админа) не использовал бота."
+        if has_activity:
+            message += "<pre>" + "\n".join(stats_lines) + "</pre>"
+        else:
+            message += "Сегодня никто из пользователей (кроме админа) не использовал бота."
+        logger.debug(f"Admin stats message for chat_id={chat_id}: {message}")
         await self.update_message(chat_id, message, create_keyboard(chat_id, 'main'))
 
 def create_keyboard(chat_id, keyboard_type):
