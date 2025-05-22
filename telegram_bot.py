@@ -230,38 +230,54 @@ class BotState:
 
     async def fetch_converter_data(self):
         """Получение данных для конвертера."""
+        logger.info("Fetching converter data")
         url = "https://api.coingecko.com/api/v3/coins/markets"
         params = {"vs_currency": "usd", "ids": "manta-network,ethereum,bitcoin", "per_page": 3, "page": 1, "sparkline": "false"}
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
+        for attempt in range(3):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, params=params) as response:
+                        logger.info(f"CoinGecko response status: {response.status}")
+                        if response.status == 429:
+                            logger.warning("Rate limit exceeded, retrying after delay")
+                            await asyncio.sleep(60)
+                            continue
+                        if response.status != 200:
+                            logger.error(f"CoinGecko API error: {response.status}")
+                            return self.converter_cache
+                        data = await response.json()
+                        logger.info(f"CoinGecko data: {data}")
+                        self.converter_cache = {coin["id"]: coin["current_price"] for coin in data}
+                        self.converter_cache_time = datetime.now(pytz.timezone('Europe/Kyiv'))
                         return self.converter_cache
-                    data = await response.json()
-                    self.converter_cache = {coin["id"]: coin["current_price"] for coin in data}
-                    self.converter_cache_time = datetime.now(pytz.timezone('Europe/Kyiv'))
-                    return self.converter_cache
-        except Exception as e:
-            logger.error(f"Error fetching converter data: {str(e)}")
-            return self.converter_cache
+            except Exception as e:
+                logger.error(f"Error fetching converter data (attempt {attempt + 1}): {str(e)}")
+                if attempt < 2:
+                    await asyncio.sleep(5)
+        return self.converter_cache
 
     async def convert_manta(self, chat_id, amount):
         """Конвертация MANTA в другие валюты."""
+        logger.info(f"Starting conversion for chat_id={chat_id}, amount={amount}")
         prices = self.converter_cache or await self.fetch_converter_data()
-        if not prices:
+        logger.info(f"Converter cache: {prices}")
+        if not prices or not all(key in prices for key in ["manta-network", "ethereum", "bitcoin"]):
             await self.update_message(chat_id, "⚠️ Данные о ценах недоступны.", create_keyboard(chat_id, 'menu'))
             return None
         try:
-            manta_usd = prices.get("manta-network")
-            eth_usd = prices.get("ethereum")
-            btc_usd = prices.get("bitcoin")
+            manta_usd = prices["manta-network"]
+            eth_usd = prices["ethereum"]
+            btc_usd = prices["bitcoin"]
+            if manta_usd == 0 or eth_usd == 0 or btc_usd == 0:
+                raise ValueError("Одна из цен равна нулю")
             result = {
                 "USDT": amount * manta_usd,
-                "ETH": amount * manta_usd / eth_usd if eth_usd else 0,
-                "BTC": amount * manta_usd / btc_usd if btc_usd else 0
+                "ETH": amount * manta_usd / eth_usd,
+                "BTC": amount * manta_usd / btc_usd
             }
             message = f"<pre>Конвертация {int(amount)} MANTA:\n◆ USDT: {result['USDT']:.2f}\n◆ ETH:  {result['ETH']:.6f}\n◆ BTC:  {result['BTC']:.8f}</pre>"
             await self.update_message(chat_id, message, create_keyboard(chat_id, 'menu'))
+            logger.info(f"Conversion result: {result}")
             return True
         except Exception as e:
             logger.error(f"Error in convert_manta: {str(e)}")
@@ -497,9 +513,11 @@ async def handle_main_button(message: types.Message):
     chat_id = message.chat.id
     text = message.text
     today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
+    logger.info(f"Handling button: {text} for chat_id={chat_id}, pending_commands={state.pending_commands.get(chat_id)}")
     if text not in ["Меню", "Назад"]:
         state.user_stats[chat_id][today][text] += 1
     if chat_id in state.pending_commands and text not in ["Тихие Часы", "Manta Конвертер", "Газ Калькулятор"]:
+        logger.info(f"Removing pending_commands for chat_id={chat_id}, command={state.pending_commands[chat_id]}")
         del state.pending_commands[chat_id]
 
     levels = state.user_states[chat_id]['current_levels']
@@ -537,18 +555,15 @@ async def process_value(message: types.Message):
         return
     chat_id = message.chat.id
     text = message.text.strip()
+    logger.info(f"Processing value for chat_id={chat_id}, text={text}, pending_commands={state.pending_commands.get(chat_id)}")
     if chat_id not in state.pending_commands:
         await state.update_message(chat_id, "Выберите действие с помощью кнопок.", create_keyboard(chat_id, 'main'))
         return
 
     state_data = state.pending_commands[chat_id]
-    handlers = {
-        'manta_converter_input': lambda: handle_converter_input(chat_id, text),
-        'gas_calculator_input': lambda: handle_gas_calculator_input(chat_id, text, state_data),
-        'silent_hours_input': lambda: handle_silent_hours_input(chat_id, text)
-    }
 
     async def handle_converter_input(chat_id, text):
+        logger.info(f"Handling converter input: chat_id={chat_id}, text={text}")
         if text in ["Отмена", "Назад"]:
             await state.update_message(chat_id, "Действие отменено." if text == "Отмена" else "Возврат в меню.", create_keyboard(chat_id, 'main' if text == "Отмена" else 'menu'))
             del state.pending_commands[chat_id]
@@ -556,11 +571,18 @@ async def process_value(message: types.Message):
         try:
             amount = float(text.replace(',', '.'))
             if amount <= 0:
-                raise ValueError
-            await state.convert_manta(chat_id, amount)
+                raise ValueError("Количество должно быть положительным")
+            logger.info(f"Converting {amount} MANTA for chat_id={chat_id}")
+            result = await state.convert_manta(chat_id, amount)
+            if result:
+                logger.info(f"Conversion completed for chat_id={chat_id}")
             del state.pending_commands[chat_id]
-        except ValueError:
+        except ValueError as e:
+            logger.error(f"ValueError in handle_converter_input: {str(e)}")
             await state.update_message(chat_id, "Ошибка: введите положительное число.", create_keyboard(chat_id, 'converter'))
+        except Exception as e:
+            logger.error(f"Unexpected error in handle_converter_input: {str(e)}")
+            await state.update_message(chat_id, "Ошибка при конвертации.", create_keyboard(chat_id, 'converter'))
 
     async def handle_gas_calculator_input(chat_id, text, state_data):
         if text in ["Отмена", "Назад"]:
@@ -600,6 +622,11 @@ async def process_value(message: types.Message):
         else:
             await state.update_message(chat_id, "Тихие Часы фиксированы: 00:00–08:00. Выберите действие.", create_keyboard(chat_id, 'silent_hours'))
 
+    handlers = {
+        'manta_converter_input': lambda: handle_converter_input(chat_id, text),
+        'gas_calculator_input': lambda: handle_gas_calculator_input(chat_id, text, state_data),
+        'silent_hours_input': lambda: handle_silent_hours_input(chat_id, text)
+    }
     await handlers.get(state_data['step'], lambda: state.update_message(chat_id, "Выберите действие.", create_keyboard(chat_id, 'main')))()
     try:
         await message.delete()
