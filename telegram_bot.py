@@ -23,7 +23,7 @@ ALLOWED_USERS = [
     (501156257, "Сергей"), (5070159060, "Васек"), (1182677771, "Толик"),
     (6322048522, "Кумец"), (1725998320, "Света"), (7009557842, "Лайф")
 ]
-ADMIN_ID = 501156257
+ADMIN_ID = 501159257
 INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
@@ -199,7 +199,13 @@ class BotState:
     async def load_or_set_default_levels(self, user_id):
         """Установка уровней газа по умолчанию."""
         try:
-            default_levels = [Decimal(str(x / 10000)) for x in range(100, 0, -5)] + [Decimal('0.000050')]
+            default_levels = [
+                Decimal(str(x / 10000)) for x in range(100, 5, -5)
+            ] + [
+                Decimal(str(x / 1000000)) for x in range(900, 0, -100)
+            ] + [
+                Decimal('0.000050'), Decimal('0.000010')
+            ]
             self.user_states[user_id]['default_levels'] = default_levels
             self.user_states[user_id]['user_added_levels'] = []
             self.user_states[user_id]['current_levels'] = default_levels.copy()
