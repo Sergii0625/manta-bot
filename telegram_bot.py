@@ -1,3 +1,4 @@
+# telegram_bot.py
 import asyncio
 import logging
 import os
@@ -46,6 +47,27 @@ def is_silent_hour(user_id, now_kyiv, user_states):
         return start_time <= now_time <= end_time
     else:
         return now_time >= start_time or now_time <= end_time
+
+async def schedule_restart():
+    """Планировщик перезапуска задач бота в указанное время."""
+    while True:
+        try:
+            now_kyiv = datetime.now(pytz.timezone('Europe/Kyiv'))
+            current_time = now_kyiv.strftime("%H:%M")
+            if current_time in RESTART_TIMES:
+                logger.info("Scheduled restart triggered at %s", current_time)
+                # Здесь можно добавить логику перезапуска, например, очистку кэшей или перезапуск задач
+                for user_id, _ in ALLOWED_USERS:
+                    await state.reset_notified_levels(user_id)
+                    logger.info(f"Reset notified levels for user_id={user_id} during scheduled restart")
+                # Задержка на минуту, чтобы избежать многократного срабатывания в ту же минуту
+                await asyncio.sleep(60)
+            else:
+                # Проверяем каждые 30 секунд
+                await asyncio.sleep(30)
+        except Exception as e:
+            logger.error(f"Error in schedule_restart: {str(e)}")
+            await asyncio.sleep(30)  # Задержка перед повторной попыткой
 
 class BotState:
     def __init__(self, scanner):
@@ -191,9 +213,9 @@ class BotState:
         file_path = "user_levels.json"
         default_levels = [Decimal(str(x)) for x in [0.010000, 0.009500, 0.009000, 0.008500, 0.008000, 0.007500, 0.007000, 0.006500, 0.006000, 0.005500, 0.005000, 0.004500, 0.004000, 0.003500, 0.003000, 0.002500, 0.002000, 0.001500, 0.001000, 0.000900, 0.000800, 0.000700, 0.000600, 0.000500, 0.000400, 0.000300, 0.000200, 0.000100, 0.000050]]
 
-        print(f"Checking {file_path} for user_id={user_id}")
+        logger.debug(f"Checking {file_path} for user_id={user_id}")
         if not os.path.exists(file_path):
-            print(f"File {file_path} not found, creating new")
+            logger.info(f"File {file_path} not found, creating new")
             with open(file_path, 'w') as f:
                 json.dump({}, f)
 
@@ -206,7 +228,7 @@ class BotState:
                     [Decimal(str(x)) for x in user_data.get("user_added_levels", [])]
                 )
         except (json.JSONDecodeError, IOError) as e:
-            print(f"Error reading {file_path}: {e}")
+            logger.error(f"Error reading {file_path}: {e}")
             return default_levels, []
 
     async def save_levels(self, user_id, levels):
