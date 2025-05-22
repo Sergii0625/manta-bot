@@ -560,10 +560,11 @@ async def process_value(message: types.Message):
         if text in ["Отмена", "Назад"]:
             if text == "Отмена" or state_data['step'] == 'gas_calculator_gas_input':
                 await state.update_message(chat_id, "Действие отменено.", create_keyboard(chat_id, 'main'))
+                if text == "Отмена":
+                    del state.pending_commands[chat_id]
             else:
                 state_data['step'] = 'gas_calculator_gas_input'
                 await state.update_message(chat_id, "Введите цену газа в Gwei (например, 0.0015):", create_keyboard(chat_id, 'gas_calculator'))
-            del state.pending_commands[chat_id] if text == "Отмена" else None
             return
         try:
             if state_data['step'] == 'gas_calculator_gas_input':
