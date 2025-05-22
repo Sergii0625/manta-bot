@@ -715,8 +715,7 @@ def create_menu_keyboard():
         [types.KeyboardButton(text="Manta Конвертер"), types.KeyboardButton(text="Газ Калькулятор")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Страх и Жадность"), types.KeyboardButton(text="Тихие Часы")],
-        [types.KeyboardButton(text="Уведомления")],
-        [types.KeyboardButton(text="Назад")]
+        [types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Уведомления")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
 
