@@ -127,8 +127,8 @@ class BotState:
 
     async def load_or_set_default_levels(self, user_id):
         try:
-            levels_data = await self.load_levels_from_file(user_id)
-            if levels_data is None or not levels_data['default_levels'] or not levels_data['user_added_levels']:
+            default_levels, user_added_levels = self.load_levels_from_file(user_id)
+            if not default_levels or not user_added_levels:
                 logger.warning(f"No levels or empty levels for user_id={user_id}, setting default levels")
                 default_levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
@@ -140,15 +140,16 @@ class BotState:
                     Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
                     Decimal('0.000050')
                 ]
+                user_added_levels = []
                 levels_data = {
                     'default_levels': default_levels,
-                    'user_added_levels': []
+                    'user_added_levels': user_added_levels
                 }
                 await self.save_levels_to_file(user_id, levels_data)
                 logger.info(f"Default levels saved for user_id={user_id}: {default_levels}")
-            self.user_states[user_id]['default_levels'] = levels_data['default_levels']
-            self.user_states[user_id]['user_added_levels'] = levels_data['user_added_levels']
-            self.user_states[user_id]['current_levels'] = sorted(set(levels_data['default_levels'] + levels_data['user_added_levels']), reverse=True)
+            self.user_states[user_id]['default_levels'] = default_levels
+            self.user_states[user_id]['user_added_levels'] = user_added_levels
+            self.user_states[user_id]['current_levels'] = sorted(set(default_levels + user_added_levels), reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
         except Exception as e:
             logger.error(f"Error loading levels for user_id={user_id}: {str(e)}, setting to default levels")
@@ -186,18 +187,27 @@ class BotState:
             await f.write(json.dumps(all_levels, indent=2))
         logger.debug(f"Saved levels to file for user_id={user_id}: {levels_data}")
 
-    async def load_levels_from_file(self, user_id):
+    def load_levels_from_file(self, user_id):
+        file_path = "user_levels.json"
+        default_levels = [Decimal(str(x)) for x in [0.010000, 0.009500, 0.009000, 0.008500, 0.008000, 0.007500, 0.007000, 0.006500, 0.006000, 0.005500, 0.005000, 0.004500, 0.004000, 0.003500, 0.003000, 0.002500, 0.002000, 0.001500, 0.001000, 0.000900, 0.000800, 0.000700, 0.000600, 0.000500, 0.000400, 0.000300, 0.000200, 0.000100, 0.000050]]
+
+        print(f"Checking {file_path} for user_id={user_id}")
+        if not os.path.exists(file_path):
+            print(f"File {file_path} not found, creating new")
+            with open(file_path, 'w') as f:
+                json.dump({}, f)
+
         try:
-            async with aiofiles.open(LEVELS_FILE, 'r') as f:
-                all_levels = json.loads(await f.read())
-            user_levels = all_levels.get(str(user_id), {})
-            return {
-                'default_levels': [Decimal(level) for level in user_levels.get('default_levels', [])],
-                'user_added_levels': [Decimal(level) for level in user_levels.get('user_added_levels', [])]
-            }
-        except (FileNotFoundError, json.JSONDecodeError, KeyError):
-            logger.debug(f"No levels file or data for user_id={user_id}")
-            return None
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+                user_data = data.get(str(user_id), {})
+                return (
+                    [Decimal(str(x)) for x in user_data.get("default_levels", default_levels)],
+                    [Decimal(str(x)) for x in user_data.get("user_added_levels", [])]
+                )
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Error reading {file_path}: {e}")
+            return default_levels, []
 
     async def save_levels(self, user_id, levels):
         default_levels = self.user_states[user_id]['default_levels']
