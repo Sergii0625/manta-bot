@@ -27,6 +27,7 @@ ALLOWED_USERS = [
     (5070159060, "Васек"),
     (1182677771, "Толик"),
     (6322048522, "Кумец"),
+    (1725998320, "Света"),
     (7009557842, "Лайф")
 ]
 ADMIN_ID = 501156257
@@ -714,7 +715,7 @@ def create_menu_keyboard():
         [types.KeyboardButton(text="Manta Конвертер"), types.KeyboardButton(text="Газ Калькулятор")],
         [types.KeyboardButton(text="Manta Price"), types.KeyboardButton(text="Сравнение L2")],
         [types.KeyboardButton(text="Страх и Жадность"), types.KeyboardButton(text="Тихие Часы")],
-        [types.KeyboardButton(text=" "), types.KeyboardButton(text="Уведомления")],
+        [types.KeyboardButton(text="Уведомления")],
         [types.KeyboardButton(text="Назад")]
     ]
     return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -755,7 +756,7 @@ async def start_command(message: types.Message):
 
 @state.dp.message(lambda message: message.text in [
     "Газ", "Manta Price", "Сравнение L2", "Страх и Жадность",
-    " ", "Уведомления", "Админ", "Тихие Часы", "Меню", "Назад",
+    "Уведомления", "Админ", "Тихие Часы", "Меню", "Назад",
     "Manta Конвертер", "Газ Калькулятор"
 ])
 async def handle_main_button(message: types.Message):
@@ -766,7 +767,7 @@ async def handle_main_button(message: types.Message):
     logger.debug(f"Button pressed: {text} by chat_id={chat_id}")
 
     today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
-    if text not in ["Меню", "Назад", " "]:
+    if text not in ["Меню", "Назад"]:
         state.user_stats[chat_id][today][text] += 1
 
     if chat_id in state.pending_commands and text not in ["Тихие Часы", "Manta Конвертер", "Газ Калькулятор"]:
@@ -814,8 +815,6 @@ async def handle_main_button(message: types.Message):
         await state.update_message(chat_id, "Выберите действие:", create_menu_keyboard())
     elif text == "Назад":
         await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
-    elif text == " ":
-        await state.update_message(chat_id, "Эта функция временно недоступна.", create_main_keyboard(chat_id))
 
     try:
         await message.delete()
@@ -867,7 +866,7 @@ async def process_value(message: types.Message):
                     if gas_price <= 0:
                         await state.update_message(chat_id, "Ошибка: введите положительное число.", create_gas_calculator_keyboard())
                         return
-                    state_data['gas_price'] = gas_Price
+                    state_data['gas_price'] = gas_price
                     state_data['step'] = 'gas_calculator_tx_count_input'
                     await state.update_message(chat_id, "Введите количество транзакций (например, 100):", create_gas_calculator_keyboard())
                 except ValueError:
