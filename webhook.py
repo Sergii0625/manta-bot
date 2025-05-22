@@ -18,6 +18,9 @@ WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"https://manta-bot.onrender.com{WEBHOOK_PATH}"
 PORT = int(os.getenv("PORT", 10000))  # Используем PORT из Render или 10000 по умолчанию
 
+# Времена для сброса уведомлений (например, ежедневно в 00:00 и 12:00 по Киеву)
+RESTART_TIMES = ["00:00", "12:00"]
+
 async def health_check(request):
     """Обработчик для проверки работоспособности"""
     return web.json_response({'status': 'ok'})
@@ -40,12 +43,12 @@ async def reset_all_notified_levels():
         try:
             now = datetime.now(kyiv_tz)
             current_time = now.strftime("%H:%M")
-            if current_time in state.RESTART_TIMES:
+            if current_time in RESTART_TIMES:
                 for chat_id in state.user_states:
                     await state.reset_notified_levels(chat_id)
                     logger.info(f"Reset notified levels for chat_id={chat_id} at {current_time}")
-                await asyncio.sleep(60)
-            await asyncio.sleep(30)
+                await asyncio.sleep(60)  # Ждём минуту, чтобы избежать многократного сброса
+            await asyncio.sleep(30)  # Проверяем каждые 30 секунд
         except Exception as e:
             logger.error(f"Error in reset_all_notified_levels: {str(e)}")
             await asyncio.sleep(30)
