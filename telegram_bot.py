@@ -1,14 +1,13 @@
 import asyncio
 import logging
 import os
-import json
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command
 from decimal import Decimal
 from datetime import datetime, time
 import aiohttp
-from monitoring_scanner import Scanner
 import pytz
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from monitoring_scanner import Scanner
 
 # Настройка логирования
 logging.basicConfig(
@@ -561,7 +560,7 @@ class BotState:
             token_data = self.l2_data_cache
             if not token_data:
                 logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard())
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
                 return
 
             manta_data = token_data["MANTA"]
@@ -584,7 +583,7 @@ class BotState:
 
             message = (
                 f"<pre>"
-                f"🦎 Данные с CoinGecko:\n"
+                f"🦅 Данные с CoinGecko:\n"
                 f"◆ MANTA/USDT: ${float(price):.3f}\n\n"
                 f"◆ ИЗМЕНЕНИЕ:\n"
                 f"◆ 24 ЧАСА:     {float(price_change_24h):>6.2f}%\n"
@@ -593,31 +592,31 @@ class BotState:
                 f"◆ ВСЕ ВРЕМЯ:   {float(price_change_all):.2f}%\n"
                 f"\n"
                 f"◆ Binance Volume Trade 24ч:\n"
-                f"◆ (Futures):   {futures_volume_str}\n"
-                f"◆ (Spot):      {spot_volume_str}\n"
+                f"◆ (Фьючерсы):   {futures_volume_str}\n"
+                f"◆ (Спот):        {spot_volume_str}\n"
                 f"\n"
                 f"◆ ${float(ath_price):.2f} ({ath_date})\n"
                 f"◆ ${float(atl_price):.2f} ({atl_date})\n"
                 f"</pre>"
             )
 
-            await self.update_message(chat_id, message, create_main_keyboard())
+            await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
         except Exception as e:
-            logger.error(f"Error fetching price for chat_id={chat_id}: {str(e)}")
-            await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard())
+            logger.error(f"Error fetching price for chat_id={chat_id}: {e}")
+            await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
     async def get_l2_comparison(self, chat_id):
         try:
             token_data = self.l2_data_cache
             if not token_data:
                 logger.warning(f"No L2 data in cache for chat_id={chat_id}, waiting for background fetch")
-                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard())
+                await self.update_message(chat_id, "⚠️ Данные о ценах недоступны. Пожалуйста, подождите несколько минут.", create_main_keyboard(chat_id))
                 return
 
             message = (
                 f"<pre>"
-                f"🦎 Данные с CoinGecko:\n"
+                f"🦅 Данные с CoinGecko:\n"
                 f"◆ Сравнение L2 токенов (24 часа):\n\n"
             )
             sorted_by_24h = sorted(
@@ -626,7 +625,7 @@ class BotState:
                 reverse=True
             )
             for name, data in sorted_by_24h:
-                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                price_str = f"${float(data['price']):.4f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
                 change_str = f"{float(data['24h']):>6.2f}%" if data['24h'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
 
@@ -637,7 +636,7 @@ class BotState:
                 reverse=True
             )
             for name, data in sorted_by_7d:
-                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                price_str = f"${float(data['price']):.4f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
                 change_str = f"{float(data['7d']):>6.2f}%" if data['7d'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
 
@@ -648,7 +647,7 @@ class BotState:
                 reverse=True
             )
             for name, data in sorted_by_30d:
-                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                price_str = f"${float(data['price']):.4f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
                 change_str = f"{float(data['30d']):>6.2f}%" if data['30d'] not in ("Н/Д", None) else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
 
@@ -659,22 +658,22 @@ class BotState:
                 reverse=True
             )
             for name, data in sorted_by_all:
-                price_str = f"${float(data['price']):.3f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
-                change_str = f"{float(data['all']):>6.2f}%" if data['all'] not in ("Н/Д", None) else "Н/Д"
+                price_str = f"${float(data['price']):.4f}" if data['price'] not in ("Н/Д", None) else "Н/Д"
+                change_str = f"{float(data['all']):>6.2f}%" if data['all'] != "Н/Д" else "Н/Д"
                 message += f"◆ {name:<9}: {price_str} | {change_str}\n"
             message += "</pre>"
 
-            await self.update_message(chat_id, message, create_main_keyboard())
+            await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
         except Exception as e:
-            logger.error(f"Error fetching L2 comparison for chat_id={chat_id}: {str(e)}")
-            await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard())
+            logger.error(f"Error fetching L2 comparison for chat_id={chat_id}: {e}")
+            await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
     async def get_fear_greed(self, chat_id):
         try:
             fg_data = await self.fetch_fear_greed()
             if not fg_data:
-                await self.update_message(chat_id, "⚠️ Не удалось получить данные Fear & Greed от CoinMarketCap.", create_main_keyboard())
+                await self.update_message(chat_id, "⚠️ Не удалось получить данные Fear & Greed от CoinMarketCap.", create_main_keyboard(chat_id))
                 return
 
             current_value = fg_data["current"]["value"]
@@ -707,14 +706,15 @@ class BotState:
                 f"</pre>"
             )
 
-            await self.update_message(chat_id, message, create_main_keyboard())
+            await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
         except Exception as e:
-            logger.error(f"Error fetching Fear & Greed for chat_id={chat_id}: {str(e)}")
-            await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard())
+            logger.error(f"Error fetching Fear & Greed for chat_id={chat_id}: {e}")
+            await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
 
     async def get_admin_stats(self, chat_id):
         if chat_id != ADMIN_ID:
+            await self.update_message(chat_id, "Доступ только для админа.", create_main_keyboard(chat_id))
             return
         today = datetime.now(pytz.timezone('Europe/Kyiv')).date().isoformat()
         message = "<b>Статистика использования бота за сегодня:</b>\n\n<pre>"
@@ -733,7 +733,7 @@ class BotState:
         message += "</pre>"
         if not has_activity:
             message = "<b>Статистика использования бота за сегодня:</b>\n\nСегодня никто из пользователей (кроме админа) не использовал бота."
-        await self.update_message(chat_id, message, create_main_keyboard())
+        await self.update_message(chat_id, message, create_main_keyboard(chat_id))
 
 def create_main_keyboard(chat_id):
     if chat_id == ADMIN_ID:
@@ -795,7 +795,7 @@ def create_level_input_keyboard():
 def create_delete_levels_keyboard(levels):
     keyboard = [[types.KeyboardButton(text=f"Удалить {level:.6f} Gwei")] for level in levels]
     keyboard.append([types.KeyboardButton(text="Назад"), types.KeyboardButton(text="Отмена")])
-    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=False)
+    return types.ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True, one_time_keyboard=True)
 
 scanner = Scanner()
 state = BotState(scanner)
@@ -854,10 +854,7 @@ async def handle_main_button(message: types.Message):
         else:
             await state.update_message(chat_id, "Уровни не установлены.", create_main_keyboard(chat_id))
     elif text == "Админ":
-        if chat_id == ADMIN_ID:
-            await state.get_admin_stats(chat_id)
-        else:
-            await state.update_message(chat_id, "Доступ только для админа.", create_main_keyboard(chat_id))
+        await state.get_admin_stats(chat_id)
     elif text == "Тихие Часы":
         state.pending_commands[chat_id] = {'step': 'silent_hours_input'}
         start_time, end_time = state.user_states[chat_id]['silent_hours']
@@ -1105,7 +1102,6 @@ async def schedule_restart():
     while True:
         try:
             now = datetime.now(kyiv_tz)
-            current_time = now.strftime("%H:%M")
             current_day = now.date()
 
             if current_day != last_restart_day:
