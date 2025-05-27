@@ -8,7 +8,6 @@ from decimal import Decimal
 from datetime import datetime, time
 import aiohttp
 from monitoring_scanner import Scanner
-import asyncpg
 import pytz
 
 # Настройка логирования
@@ -34,124 +33,6 @@ INTERVAL = 60
 CONFIRMATION_INTERVAL = 20
 CONFIRMATION_COUNT = 3
 RESTART_TIMES = ["21:00"]
-
-# Функции для работы с PostgreSQL
-async def init_db():
-    try:
-        conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS user_levels (
-                user_id BIGINT PRIMARY KEY,
-                levels TEXT
-            );
-            CREATE TABLE IF NOT EXISTS user_stats (
-                user_id BIGINT PRIMARY KEY,
-                stats TEXT
-            );
-            CREATE TABLE IF NOT EXISTS silent_hours (
-                user_id BIGINT PRIMARY KEY,
-                start_time TIME,
-                end_time TIME
-            );
-        """)
-        logger.info("Database initialized successfully")
-        return conn
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {str(e)}")
-        raise
-
-async def save_silent_hours(user_id, start_time, end_time):
-    conn = await init_db()
-    await conn.execute(
-        """
-        INSERT INTO silent_hours (user_id, start_time, end_time)
-        VALUES ($1, $2, $3)
-        ON CONFLICT (user_id) DO UPDATE SET start_time = $2, end_time = $3
-        """,
-        user_id, start_time, end_time
-    )
-    await conn.close()
-    logger.debug(f"Saved silent hours for user_id={user_id}: {start_time}-{end_time}")
-
-async def load_silent_hours(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT start_time, end_time FROM silent_hours WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result:
-        logger.debug(f"Loaded silent hours for user_id={user_id}: {result['start_time']}-{result['end_time']}")
-        return result['start_time'], result['end_time']
-    logger.debug(f"No silent hours found for user_id={user_id}")
-    return None, None
-
-async def save_levels(user_id, levels):
-    conn = await init_db()
-    levels_str = json.dumps([str(level) for level in levels])
-    try:
-        await conn.execute(
-            """
-            INSERT INTO user_levels (user_id, levels)
-            VALUES ($1, $2)
-            ON CONFLICT (user_id) DO UPDATE SET levels = $2
-            """,
-            user_id, levels_str
-        )
-        logger.debug(f"Saved levels to DB for user_id={user_id}: {levels}")
-    except Exception as e:
-        logger.error(f"Error saving levels for user_id={user_id}: {str(e)}")
-    finally:
-        await conn.close()
-
-async def load_levels(user_id):
-    try:
-        conn = await init_db()
-        result = await conn.fetchrow(
-            "SELECT levels FROM user_levels WHERE user_id = $1",
-            user_id
-        )
-        await conn.close()
-        if result and result['levels']:
-            levels = json.loads(result['levels'])
-            if not levels:
-                logger.warning(f"Empty levels list in DB for user_id={user_id}")
-                return None
-            loaded_levels = [Decimal(level) for level in levels]
-            logger.debug(f"Loaded levels from DB for user_id={user_id}: {loaded_levels}")
-            return loaded_levels
-        logger.warning(f"No levels found in DB for user_id={user_id}")
-        return None
-    except Exception as e:
-        logger.error(f"Error loading levels for user_id={user_id}: {str(e)}")
-        return None
-
-async def save_stats(user_id, stats):
-    conn = await init_db()
-    stats_str = json.dumps(stats)
-    await conn.execute(
-        """
-        INSERT INTO user_stats (user_id, stats)
-        VALUES ($1, $2)
-        ON CONFLICT (user_id) DO UPDATE SET stats = $2
-        """,
-        user_id, stats_str
-    )
-    await conn.close()
-    logger.debug(f"Saved stats for user_id={user_id}")
-
-async def load_stats(user_id):
-    conn = await init_db()
-    result = await conn.fetchrow(
-        "SELECT stats FROM user_stats WHERE user_id = $1",
-        user_id
-    )
-    await conn.close()
-    if result:
-        logger.debug(f"Loaded stats for user_id={user_id}")
-        return json.loads(result['stats'])
-    logger.debug(f"No stats found for user_id={user_id}")
-    return None
 
 def is_silent_hour(user_id, now_kyiv):
     start_time, end_time = state.user_states[user_id].get('silent_hours', (None, None))
@@ -183,17 +64,6 @@ class BotState:
         self.price_fetch_interval = 300
         logger.info("BotState initialized")
 
-    async def check_db_connection(self):
-        """Проверка целостности подключения к базе данных при старте"""
-        try:
-            conn = await asyncpg.connect(os.getenv("DATABASE_URL"))
-            await conn.close()
-            logger.info("Database connection test successful")
-            return True
-        except Exception as e:
-            logger.error(f"Database connection test failed: {str(e)}")
-            return False
-
     async def init_user_state(self, user_id):
         if user_id not in self.user_states:
             self.user_states[user_id] = {
@@ -208,9 +78,7 @@ class BotState:
             await self.load_or_set_default_levels(user_id)
             if not self.user_states[user_id]['current_levels']:
                 logger.warning(f"current_levels is empty for user_id={user_id} after load_or_set_default_levels, forcing default levels")
-                await self.load_or_set_default_levels(user_id)  # Повторная попытка
-            start_time, end_time = await load_silent_hours(user_id)
-            self.user_states[user_id]['silent_hours'] = (start_time, end_time)
+                await self.load_or_set_default_levels(user_id)
             logger.debug(f"Initialized user_state for user_id={user_id}, current_levels={self.user_states[user_id]['current_levels']}, silent_hours={self.user_states[user_id]['silent_hours']}")
 
     def init_user_stats(self, user_id):
@@ -245,7 +113,7 @@ class BotState:
         self.init_user_stats(chat_id)
         return True
 
-    async def set_menu_button(self):
+    async set_menu_button(self):
         try:
             await self.bot.set_chat_menu_button(menu_button=types.MenuButtonCommands())
             logger.info("Menu button set to 'commands'")
@@ -254,8 +122,8 @@ class BotState:
 
     async def load_or_set_default_levels(self, user_id):
         try:
-            levels = await load_levels(user_id)
-            if levels is None or not levels:
+            levels = self.user_states[user_id].get('current_levels', [])
+            if not levels:
                 logger.warning(f"No levels or empty levels for user_id={user_id}, setting default levels")
                 levels = [
                     Decimal('0.010000'), Decimal('0.009500'), Decimal('0.009000'), Decimal('0.008500'),
@@ -267,12 +135,8 @@ class BotState:
                     Decimal('0.000400'), Decimal('0.000300'), Decimal('0.000200'), Decimal('0.000100'),
                     Decimal('0.000050')
                 ]
-                try:
-                    await save_levels(user_id, levels)
-                    logger.info(f"Default levels saved to DB for user_id={user_id}: {levels}")
-                except Exception as e:
-                    logger.error(f"Failed to save default levels for user_id={user_id}: {str(e)}")
-            self.user_states[user_id]['current_levels'] = levels
+                self.user_states[user_id]['current_levels'] = levels
+                logger.info(f"Default levels set for user_id={user_id}: {levels}")
             self.user_states[user_id]['current_levels'].sort(reverse=True)
             logger.info(f"Loaded levels for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
         except Exception as e:
@@ -288,17 +152,11 @@ class BotState:
                 Decimal('0.000050')
             ]
             self.user_states[user_id]['current_levels'] = levels
-            try:
-                await save_levels(user_id, levels)
-                logger.info(f"Default levels saved to DB after error for user_id={user_id}: {levels}")
-            except Exception as e:
-                logger.error(f"Failed to save default levels after error for user_id={user_id}: {str(e)}")
             logger.info(f"Set default levels due to error for user_id={user_id}: {self.user_states[user_id]['current_levels']}")
 
     async def save_levels(self, user_id, levels):
         levels.sort(reverse=True)
         try:
-            await save_levels(user_id, levels)
             self.user_states[user_id]['current_levels'] = levels
             logger.debug(f"Saved levels for user_id={user_id}: {levels}")
         except Exception as e:
@@ -306,9 +164,7 @@ class BotState:
 
     async def load_user_stats(self, user_id):
         try:
-            stats = await load_stats(user_id)
-            if stats is None:
-                stats = {}
+            stats = self.user_stats.get(user_id, {})
             self.user_stats[user_id] = stats
             self.init_user_stats(user_id)
             logger.debug(f"Loaded user stats for user_id={user_id}")
@@ -318,10 +174,24 @@ class BotState:
 
     async def save_user_stats(self, user_id):
         try:
-            await save_stats(user_id, self.user_stats[user_id])
             logger.debug(f"Saved stats for user_id={user_id}")
         except Exception as e:
             logger.error(f"Error saving stats for user_id={user_id}: {str(e)}")
+
+    async def set_silent_hours(self, chat_id, time_range):
+        try:
+            start_str, end_str = time_range.split('-')
+            start_time = datetime.strptime(start_str, "%H:%M").time()
+            end_time = datetime.strptime(end_str, "%H:%M").time()
+            self.user_states[chat_id]['silent_hours'] = (start_time, end_time)
+            logger.info(f"Set silent hours for chat_id={chat_id}: {start_time}-{end_time}")
+            return True, f"Тихие Часы установлены: {start_str}-{end_str}"
+        except ValueError as e:
+            logger.error(f"Invalid time format for chat_id={chat_id}: {time_range}, error: {str(e)}")
+            return False, "Ошибка: введите время в формате ЧЧ:ММ-ЧЧ:ММ, например, 00:00-07:00"
+        except Exception as e:
+            logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
+            return False, f"Ошибка: {str(e)}"
 
     async def update_message(self, chat_id, text, reply_markup=None):
         try:
@@ -450,22 +320,6 @@ class BotState:
         except Exception as e:
             logger.error(f"Error for chat_id={chat_id}: {e}")
             await self.update_message(chat_id, f"<b>⚠️ Ошибка:</b> {str(e)}", create_main_keyboard(chat_id))
-
-    async def set_silent_hours(self, chat_id, time_range):
-        try:
-            start_str, end_str = time_range.split('-')
-            start_time = datetime.strptime(start_str, "%H:%M").time()
-            end_time = datetime.strptime(end_str, "%H:%M").time()
-            await save_silent_hours(chat_id, start_time, end_time)
-            self.user_states[chat_id]['silent_hours'] = (start_time, end_time)
-            logger.info(f"Set silent hours for chat_id={chat_id}: {start_time}-{end_time}")
-            return True, f"Тихие Часы установлены: {start_str}-{end_str}"
-        except ValueError as e:
-            logger.error(f"Invalid time format for chat_id={chat_id}: {time_range}, error: {str(e)}")
-            return False, "Ошибка: введите время в формате ЧЧ:ММ-ЧЧ:ММ, например, 00:00-07:00"
-        except Exception as e:
-            logger.error(f"Error setting silent hours for chat_id={chat_id}: {str(e)}")
-            return False, f"Ошибка: {str(e)}"
 
     async def background_price_fetcher(self):
         while True:
@@ -1107,8 +961,7 @@ async def process_value(message: types.Message):
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Возврат в главное меню.", create_main_keyboard(chat_id))
             elif text == "Отключить Тихие Часы":
-                await save_silent_hours(chat_id, None, None)
-                state.user_states[chat_id]['silent_hours'] = (None, None)
+                self.user_states[chat_id]['silent_hours'] = (None, None)
                 logger.info(f"Disabled silent hours for chat_id={chat_id}")
                 del state.pending_commands[chat_id]
                 await state.update_message(chat_id, "Тихие Часы отключены.", create_main_keyboard(chat_id))
@@ -1285,7 +1138,7 @@ async def schedule_restart():
                         state.converter_cache_time = None
                         logger.info("Кэши очищены")
                         scanner = Scanner()
-                        await scanner.init_session()  # Initialize aiohttp session
+                        await scanner.init_session()
                         state = BotState(scanner)
                         logger.info("Новые экземпляры Scanner и BotState созданы")
                         for user_id, _ in ALLOWED_USERS:

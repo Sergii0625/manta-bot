@@ -45,10 +45,6 @@ async def init_bot(app):
     """Инициализация бота и установка webhook"""
     try:
         logger.info("Starting bot initialization")
-        # Проверка подключения к базе данных
-        if not await state.check_db_connection():
-            logger.error("Cannot proceed with bot initialization due to database connection failure")
-            raise Exception("Database connection failed")
         await scanner.init_session()  # Initialize aiohttp session
         await state.bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook set to {WEBHOOK_URL}")
