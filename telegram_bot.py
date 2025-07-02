@@ -21,11 +21,6 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CMC_API_KEY = os.getenv("CMC_API_KEY")
 ALLOWED_USERS = [
     (501156257, "Сергей"),
-    (5070159060, "Васек"),
-    (1182677771, "Толик"),
-    (6322048522, "Кумец"),
-    (1725998320, "Света"),
-    (7009557842, "Лайф")
 ]
 ADMIN_ID = 501156257
 INTERVAL = 60
@@ -103,7 +98,7 @@ class BotState:
         logger.debug(f"Checking access for chat_id={chat_id}")
         if chat_id not in [user[0] for user in ALLOWED_USERS]:
             try:
-                await self.bot.send_message(chat_id, "⛽ У вас нет доступа к этому боту.")
+                await self.bot.send_message(chat_id, "⚠️ Бот не существует или был удалён.")
             except Exception as e:
                 logger.warning(f"Cannot notify chat_id={chat_id}: {e}")
             logger.warning(f"Access denied for chat_id={chat_id}")
